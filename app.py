@@ -183,7 +183,7 @@ except Exception as e:
     st.stop()
 
 h, p = res["history"], res["params"]
-cs = res.get("currency", spe.DEFAULT_CURRENCY)["symbol"]
+cs = res.get("currency", {"symbol": "$", "code": "USD"})["symbol"]
 
 # ---- history / prior diagnostics -------------------------------------
 st.subheader("The prior -- what this stock has actually done")
