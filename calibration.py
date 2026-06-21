@@ -1,44 +1,18 @@
 """
-CALIBRATION / WALK-FORWARD BACKTEST
-===================================
-The engine in stock_probability_engine.py produces probabilities that are
-INTERNALLY consistent (the bootstrap is unbiased, scale-invariant, etc. -- see
-qa_check.py). That says nothing about whether a forecast of "72% chance of
-profit" is RIGHT. This module checks the forecasts against realized history.
+Walk-forward calibration backtest for the block-bootstrap engine.
 
-METHOD -- expanding-window walk-forward:
-  Step through history. At each origin t (using ONLY data available up to t):
-    1. fit the block bootstrap on returns[:t],
-    2. forecast P(profit) and the terminal-multiple percentiles for horizon H,
-    3. record what ACTUALLY happened over [t, t+H].
-  Then score the collected (forecast, outcome) pairs.
+Checks whether the engine's probability forecasts match reality by stepping
+through history: at each point, fit the model using ONLY past data, forecast
+P(profit) for the next H years, then compare against what actually happened.
 
-OUTPUTS:
-  - Reliability curve   : predicted P(profit) vs observed frequency (bucketed).
-                          A well-calibrated model sits on the diagonal.
-  - Brier score         : mean squared error of the probability forecasts.
-  - Brier Skill Score   : skill vs a naive CLIMATOLOGY benchmark (always predict
-                          the unconditional base rate). BSS > 0 == adds value;
-                          BSS <= 0 == the model does NOT beat the naive base rate
-                          (and the README says so plainly).
-  - PIT coverage        : do realized outcomes fall below the P10/P50/P90 forecast
-                          ~10/50/90% of the time? (validates the WHOLE distribution,
-                          not just P(profit)).
+Scores with Brier Score, Brier Skill Score (vs out-of-sample base rate),
+reliability curve, and PIT coverage. Reports both raw sample count and
+effective independent N (overlapping windows are correlated).
 
-HONESTY -- overlapping windows:
-  Walk-forward forecasts at H-spaced-by-`step` origins share data, so the samples
-  are autocorrelated. We report the raw count AND an effective non-overlapping N
-  (~ span / H); treat confidence accordingly.
-
-Works for a single asset, a diversified index, or a --portfolio (the portfolio's
-rebalanced return series is calibrated the same way). Research instrument only --
-NOT investment advice, no trading capability.
-
-USAGE:
+Usage:
   python calibration.py SPY
   python calibration.py SPY --horizon 3
   python calibration.py --portfolio "VTI:0.8,QQQ:0.2"
-  knobs: --horizon (yrs) --step (trading days) --min-train (yrs) --paths --out file.png
 """
 import json
 import numpy as np

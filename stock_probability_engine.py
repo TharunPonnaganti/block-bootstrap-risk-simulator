@@ -1,61 +1,22 @@
 """
-BLOCK-BOOTSTRAP PORTFOLIO RISK SIMULATOR  (core engine)
-=======================================================
-Risk-and-return distribution for a diversified INDEX or multi-asset PORTFOLIO
-(primary use), or a single stock (secondary, weaker prior): "given the real
-historical return distribution, what is the range of outcomes over horizon H?"
-Reports percentile outcomes, P(profit), VaR/CVaR, drawdown -- and a neutral
-P(profit)-vs-threshold INDICATOR (not a buy/sell signal) from a threshold YOU set.
+Block-Bootstrap Portfolio Risk Simulator -- core engine.
 
-  PRIMARY  : a diversified fund (default VTI) or --portfolio "VTI:0.8,QQQ:0.2"
-             (multi-asset, with cross-asset correlation preserved by joint
-             resampling). The bootstrap prior is statistically sound here.
-  SECONDARY: a single stock -- supported, but flagged WEAKER PRIOR because one
-             name is idiosyncratic.
-  Forecast quality is validated out-of-sample in calibration.py (walk-forward
-  reliability, Brier score, skill vs a naive base rate).
+Simulates the full distribution of future portfolio outcomes by reshuffling
+blocks of real historical returns (circular moving-block bootstrap, Politis &
+Romano 1992). Reports P(profit), VaR/CVaR (Expected Shortfall), drawdown
+distribution, and percentile cones over 1/3/5-year horizons.
 
-METHOD (kept deliberately rigorous -- not a flat-average projection):
-  Circular BLOCK BOOTSTRAP of the asset's OWN historical returns. We resample
-  contiguous blocks of real past returns and stitch them into thousands of
-  synthetic future paths. Because we reuse REAL return sequences, the
-  simulation inherits the actual:
-     - fat tails / crash days     (a normal-curve Monte Carlo erases these)
-     - volatility clustering       (calm and storm cluster, as in reality)
-     - drift                       (its real historical trend)
-  This is closer to how a desk stress-tests a position than mu/sigma guesses.
+Supports single tickers (index or stock), multi-asset portfolios with
+correlation-preserving joint resampling, era-blended windows, and monthly
+recurring (DCA/SIP) alongside lump sum.
 
-P(profit)-vs-THRESHOLD INDICATOR:
-  At each horizon we report P(end value > amount invested) and flag whether it is
-  ABOVE or BELOW a threshold YOU set. This is a mechanical comparison, NOT a
-  buy/sell signal -- walk-forward calibration (calibration.py) shows P(profit) has
-  no demonstrated skill versus a base-rate benchmark, so it must not be read as a
-  trade recommendation. NOT investment advice, NOT a prediction.
+Forecast quality is validated out-of-sample in calibration.py.
+Not investment advice. No trading capability. Research tool only.
 
-HONESTY NOTES:
-  - A single stock is idiosyncratic: its past distribution is a WEAKER prior
-    than a diversified index. The script reports how much history it had and
-    warns when that history is short or spans only a bull market.
-  - All figures are NOMINAL (not inflation-adjusted).
-  - Bootstrap drift = the stock's realized historical drift. If that history was
-    an unusual boom, the odds shown will be too rosy. DRIFT_HAIRCUT lets you
-    shave the drift to stress a more conservative view.
-
-DATA:
-  Default: pulls public, dividend/split-adjusted daily history from Yahoo by
-  ticker. Override with your own CSV (Fidelity / Robinhood / anywhere) -- the
-  parser auto-detects a date column and a price column ('Adj Close' preferred).
-
-USAGE:
-  python stock_probability_engine.py                              # default index VTI, full history
-  python stock_probability_engine.py SPY                          # any diversified fund
-  python stock_probability_engine.py --portfolio "VTI:0.8,QQQ:0.2"  # multi-asset portfolio
-  python stock_probability_engine.py AAPL                         # single stock (weaker-prior caveat)
-  python stock_probability_engine.py VTI --years 15               # cap to last 15 years
-  python stock_probability_engine.py VTI --blend                  # blend eras (see BLEND)
-  python stock_probability_engine.py --csv mydata.csv             # your own export
-  python stock_probability_engine.py SPY --json                   # machine-readable output (for an app)
-  extra knobs: --threshold 0.7  --amount 10000  --paths 10000  --haircut 0.25
+Usage:
+  python stock_probability_engine.py SPY
+  python stock_probability_engine.py SPY --blend --dca 500
+  python stock_probability_engine.py --portfolio "VTI:0.8,QQQ:0.2"
 """
 
 import sys

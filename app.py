@@ -1,13 +1,8 @@
 """
-STOCK PROBABILITY ENGINE -- local Streamlit UI
-==============================================
-A fully-local front end over stock_probability_engine.py. Nothing leaves your
-PC except the price-history fetch from Yahoo (or use your own CSV).
+Streamlit dashboard for the block-bootstrap risk simulator.
 
-RUN:
-    pip install streamlit
-    streamlit run app.py
-Then it opens in your browser at http://localhost:8501
+Runs locally -- nothing leaves your machine except the Yahoo price fetch.
+Start with: streamlit run app.py
 """
 import tempfile
 from types import SimpleNamespace

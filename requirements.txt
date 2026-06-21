@@ -1,8 +1,10 @@
 # Block-Bootstrap Portfolio Risk Simulator
-# Data layer is standard-library only (urllib / json / csv) -- no API key, no SDK.
+# Data layer uses only the standard library (urllib / json / csv) -- no API key needed.
 
-numpy>=1.23           # vectorized engine, bootstrap, statistics
-matplotlib>=3.5       # reliability-curve plotting (calibration.py) only
+numpy>=1.23           # core engine: bootstrap, statistics, vectorized math
+matplotlib>=3.5       # reliability-curve plot (calibration.py only)
 
-# Optional -- local Streamlit UI (app.py)
+# Dashboard UI (app.py) -- optional but recommended
 streamlit>=1.30
+pandas>=1.5           # data tables in the dashboard
+altair>=5.0           # interactive probability-cone charts
