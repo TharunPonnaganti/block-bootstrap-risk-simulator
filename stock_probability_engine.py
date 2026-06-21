@@ -74,9 +74,33 @@ CSV_PATH        = None        # e.g. r"C:\Users\you\Downloads\VTI.csv" to use yo
 
 # Recognized broad/diversified funds: a single one of these is a legitimate prior.
 # Any OTHER single ticker is treated as a single stock and earns a WEAKER-PRIOR caveat.
-DIVERSIFIED = {"VTI", "VOO", "SPY", "IVV", "ITOT", "SCHB", "SCHX", "QQQ", "DIA", "IWM",
-               "VXUS", "VEU", "VEA", "VWO", "VT", "ACWI", "BND", "AGG", "BNDX",
-               "VTV", "VUG", "VYM", "SCHD", "VIG", "RSP"}
+DIVERSIFIED = {
+    # US
+    "VTI", "VOO", "SPY", "IVV", "ITOT", "SCHB", "SCHX", "QQQ", "DIA", "IWM",
+    "VXUS", "VEU", "VEA", "VWO", "VT", "ACWI", "BND", "AGG", "BNDX",
+    "VTV", "VUG", "VYM", "SCHD", "VIG", "RSP",
+    # India (NSE)
+    "NIFTYBEES.NS", "JUNIORBEES.NS", "BANKBEES.NS", "SETFNIF50.NS",
+    "CPSEETF.NS", "NIF100BEES.NS", "MOM100.NS",
+    # India (BSE)
+    "NIFTYBEES.BO", "JUNIORBEES.BO", "BANKBEES.BO", "SETFNIF50.BO",
+}
+
+# Currency detection from ticker suffix
+CURRENCY_MAP = {
+    ".NS": {"symbol": "₹", "symbol_safe": "Rs.", "code": "INR", "cash_rate": 0.065},
+    ".BO": {"symbol": "₹", "symbol_safe": "Rs.", "code": "INR", "cash_rate": 0.065},
+}
+DEFAULT_CURRENCY = {"symbol": "$", "symbol_safe": "$", "code": "USD", "cash_rate": 0.04}
+
+
+def detect_currency(ticker):
+    """Return currency info dict based on ticker suffix."""
+    if ticker:
+        for suffix, info in CURRENCY_MAP.items():
+            if ticker.upper().endswith(suffix):
+                return info
+    return DEFAULT_CURRENCY
 AMOUNT          = 10_000.0    # lump sum hypothetically invested today (P(profit) is scale-free)
 HORIZONS_YEARS  = [1, 3, 5]   # holding periods to report
 PROFIT_THRESHOLD = 0.70       # indicator flags P(profit) ABOVE/BELOW this  <-- YOUR threshold
@@ -424,10 +448,18 @@ def compute(args):
     report and the --json output. Handles three input modes -- a diversified fund,
     a single stock (weaker prior), or a multi-asset --portfolio -- and returns the
     SAME output keys for all three so app.py / calibration.py stay agnostic."""
-    global AMOUNT
+    global AMOUNT, CASH_RATE
     AMOUNT = args.amount                         # analyze() / bootstrap read this global
     rng = np.random.default_rng(SEED)
     portfolio = getattr(args, "portfolio", None)
+
+    # detect currency from ticker/portfolio
+    if portfolio:
+        first_ticker = list(parse_weights(portfolio).keys())[0]
+        currency = detect_currency(first_ticker)
+    else:
+        currency = detect_currency(getattr(args, "ticker", None) or TICKER)
+    CASH_RATE = currency["cash_rate"]
 
     if portfolio:
         # -------- multi-asset: correlation-preserving joint bootstrap ----
@@ -525,6 +557,7 @@ def compute(args):
 
     return {
         "source": source, "mode": mode,
+        "currency": currency,
         "history": {"start": h_start, "end": h_end, "years": n_years_hist, "obs": obs,
                     "drift": full_drift, "vol": full_vol,
                     "max_drawdown": hist_mdd, "worst_day": worst_day},
@@ -538,6 +571,7 @@ def compute(args):
 
 def print_report(res):
     p = res["params"]; h = res["history"]; amt = p["amount"]; thr = p["threshold"]
+    cs = res.get("currency", DEFAULT_CURRENCY)["symbol_safe"]
     print("=" * 76)
     print("BLOCK-BOOTSTRAP PORTFOLIO RISK SIMULATOR")
     print("=" * 76)
@@ -547,7 +581,7 @@ def print_report(res):
     print(f"Annualized vol   : {h['vol']*100:6.1f}%")
     print(f"Worst single day : {h['worst_day']*100:6.1f}%")
     print(f"Max drawdown seen: {h['max_drawdown']*100:6.1f}%   (actual peak->trough in history)")
-    print(f"Invest amount    : ${amt:,.0f}   |   Method: circular block bootstrap, "
+    print(f"Invest amount    : {cs}{amt:,.0f}   |   Method: circular block bootstrap, "
           f"block={p['block']}, paths={p['paths']:,}")
     print(f"Sampling window  : {res['mode'].upper()}" + (f"   (drift haircut {p['haircut']*100:.0f}%)" if p['haircut'] else ""))
     if res["mode"] in ("blended", "portfolio") or len(res["windows"]) > 1 or res["windows"][0]["years"] is not None:
@@ -575,10 +609,10 @@ def print_report(res):
         print("#" * 76)
         print(f"  Probability of profit          : {r['P(profit)']*100:5.1f}%")
         print(f"  Probability of beating cash@{p['cash_rate']*100:.0f}% : {r['P(beat cash)']*100:5.1f}%")
-        print(f"  Value of ${amt:,.0f} after {years}y:")
-        print(f"      pessimistic  P10 : ${r['val_P10']:>12,.0f}   ({(r['val_P10']/amt-1)*100:+.0f}%)")
-        print(f"      median       P50 : ${r['val_P50']:>12,.0f}   ({(r['val_P50']/amt-1)*100:+.0f}%)")
-        print(f"      optimistic   P90 : ${r['val_P90']:>12,.0f}   ({(r['val_P90']/amt-1)*100:+.0f}%)")
+        print(f"  Value of {cs}{amt:,.0f} after {years}y:")
+        print(f"      pessimistic  P10 : {cs}{r['val_P10']:>12,.0f}   ({(r['val_P10']/amt-1)*100:+.0f}%)")
+        print(f"      median       P50 : {cs}{r['val_P50']:>12,.0f}   ({(r['val_P50']/amt-1)*100:+.0f}%)")
+        print(f"      optimistic   P90 : {cs}{r['val_P90']:>12,.0f}   ({(r['val_P90']/amt-1)*100:+.0f}%)")
         print(f"  Annualized return (CAGR)       : "
               f"P10 {r['cagr_P10']*100:+5.1f}% | P50 {r['cagr_P50']*100:+5.1f}% | P90 {r['cagr_P90']*100:+5.1f}%")
         print(f"  Worst {(1-p['var_conf'])*100:.0f}% of outcomes (VaR)     : end <= {r['var_ret']*100:+.0f}%   "

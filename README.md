@@ -8,6 +8,18 @@ A non-parametric risk simulator that estimates the **full distribution of future
 
 ---
 
+## Supported Markets
+
+| Market | Tickers | Currency | Risk-free rate | Example |
+|---|---|---|---|---|
+| **US** (default) | Any NYSE/NASDAQ symbol | `$` (USD) | 4.0% | `SPY`, `VTI`, `AAPL` |
+| **India -- NSE** | Append `.NS` | `₹` (INR) | 6.5% | `NIFTYBEES.NS`, `RELIANCE.NS` |
+| **India -- BSE** | Append `.BO` | `₹` (INR) | 6.5% | `NIFTYBEES.BO`, `RELIANCE.BO` |
+
+Currency and cash benchmark rate are auto-detected from the ticker suffix. The Streamlit dashboard includes a **Market** toggle (US / India) with pre-populated ticker dropdowns for each market including index ETFs (Nifty 50, Bank Nifty, Nifty Next 50) and major companies (Reliance, TCS, HDFC Bank, Infosys, etc.).
+
+---
+
 ## Aim
 
 Most retail "Monte Carlo" portfolio tools draw returns from a fitted Normal distribution and report confident-looking outcome fans. Two things are usually wrong:
@@ -188,21 +200,23 @@ Tiered model-comparison strategy, scored with CRPS and block-bootstrapped confid
 # Install dependencies
 pip install -r requirements.txt
 
-# Run the risk simulator (default: VTI, US total market)
-python stock_probability_engine.py
+# --- US market (default) ---
+python stock_probability_engine.py                              # VTI, US total market
+python stock_probability_engine.py SPY                          # S&P 500
+python stock_probability_engine.py --portfolio "VTI:0.8,QQQ:0.2"  # multi-asset (correlation preserved)
+python stock_probability_engine.py AAPL                         # single stock (weaker-prior caveat)
 
-# Any diversified fund
-python stock_probability_engine.py SPY
-
-# Multi-asset portfolio (correlation preserved)
-python stock_probability_engine.py --portfolio "VTI:0.8,QQQ:0.2"
-
-# Single stock (weaker-prior caveat shown)
-python stock_probability_engine.py AAPL
+# --- Indian market (NSE / BSE) ---
+python stock_probability_engine.py NIFTYBEES.NS                 # Nifty 50 ETF (NSE)
+python stock_probability_engine.py RELIANCE.NS                  # Reliance Industries (NSE)
+python stock_probability_engine.py HDFCBANK.NS                  # HDFC Bank (NSE)
+python stock_probability_engine.py --portfolio "NIFTYBEES.NS:0.6,HDFCBANK.NS:0.2,TCS.NS:0.2"
 
 # Machine-readable JSON output
 python stock_probability_engine.py SPY --json
 ```
+
+Currency ($/Rs.) and risk-free rate (4% USD / 6.5% INR) are auto-detected from the ticker suffix (`.NS` = NSE, `.BO` = BSE).
 
 ### Knobs
 

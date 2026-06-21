@@ -26,6 +26,14 @@ st.set_page_config(page_title="Stock Probability Engine", page_icon="📈", layo
 
 
 # ----------------------------------------------------------------------
+# Currency formatting helper
+# ----------------------------------------------------------------------
+def fmt(val, sym):
+    """Format a currency value with the right symbol."""
+    return f"{sym}{val:,.0f}"
+
+
+# ----------------------------------------------------------------------
 # Engine call -- cached on everything EXCEPT threshold, so dragging the
 # threshold slider only re-evaluates the indicator flag (instant), never re-simulates.
 # ----------------------------------------------------------------------
@@ -50,48 +58,87 @@ def above_threshold(p_profit, threshold):
 
 
 # ----------------------------------------------------------------------
+# Ticker lists by market
+# ----------------------------------------------------------------------
+US_TICKERS = [
+    "--- US diversified funds (sound prior) ---",
+    "VTI -- US total market", "VOO -- S&P 500", "SPY -- S&P 500",
+    "QQQ -- Nasdaq-100", "DIA -- Dow 30", "IWM -- US small-cap",
+    "SCHD -- US dividend", "VXUS -- ex-US total", "VWO -- emerging markets",
+    "VT -- world all-cap", "BND -- US bonds", "AGG -- US bonds",
+    "--- US individual companies (weaker prior) ---",
+    "AAPL -- Apple", "MSFT -- Microsoft", "NVDA -- Nvidia", "GOOGL -- Alphabet",
+    "AMZN -- Amazon", "META -- Meta", "TSLA -- Tesla", "NFLX -- Netflix",
+    "AMD -- AMD", "JPM -- JPMorgan Chase", "V -- Visa", "WMT -- Walmart",
+    "KO -- Coca-Cola", "DIS -- Disney", "JNJ -- Johnson & Johnson",
+    "XOM -- ExxonMobil", "BRK-B -- Berkshire Hathaway",
+    "Other (type a ticker)...",
+]
+
+INDIA_TICKERS = [
+    "--- India index ETFs / NSE (sound prior) ---",
+    "NIFTYBEES.NS -- Nifty 50 ETF", "JUNIORBEES.NS -- Nifty Next 50 ETF",
+    "BANKBEES.NS -- Bank Nifty ETF", "SETFNIF50.NS -- SBI Nifty 50 ETF",
+    "NIF100BEES.NS -- Nifty 100 ETF", "CPSEETF.NS -- CPSE ETF",
+    "MOM100.NS -- Nifty Momentum 100 ETF",
+    "--- India large-cap / NSE (weaker prior) ---",
+    "RELIANCE.NS -- Reliance Industries", "TCS.NS -- TCS",
+    "HDFCBANK.NS -- HDFC Bank", "INFY.NS -- Infosys",
+    "ICICIBANK.NS -- ICICI Bank", "BHARTIARTL.NS -- Bharti Airtel",
+    "ITC.NS -- ITC", "SBIN.NS -- State Bank of India",
+    "LT.NS -- Larsen & Toubro", "KOTAKBANK.NS -- Kotak Mahindra Bank",
+    "HINDUNILVR.NS -- Hindustan Unilever", "BAJFINANCE.NS -- Bajaj Finance",
+    "MARUTI.NS -- Maruti Suzuki", "TATAMOTORS.NS -- Tata Motors",
+    "WIPRO.NS -- Wipro", "TATASTEEL.NS -- Tata Steel",
+    "ADANIENT.NS -- Adani Enterprises", "ADANIPORTS.NS -- Adani Ports",
+    "HCLTECH.NS -- HCL Technologies", "SUNPHARMA.NS -- Sun Pharma",
+    "TITAN.NS -- Titan Company", "POWERGRID.NS -- Power Grid Corp",
+    "--- India / BSE ---",
+    "NIFTYBEES.BO -- Nifty 50 ETF (BSE)", "JUNIORBEES.BO -- Nifty Next 50 (BSE)",
+    "Other (type a ticker)...",
+]
+
+
+# ----------------------------------------------------------------------
 # Sidebar -- inputs
 # ----------------------------------------------------------------------
 st.sidebar.title("Inputs")
 
+market = st.sidebar.radio("Market", ["US", "India"], index=0, horizontal=True)
+
 data_mode = st.sidebar.radio(
     "Data", ["Single ticker (fund or stock)", "Portfolio (multi-asset)", "Upload CSV"], index=0)
 ticker, csv_bytes, portfolio = None, None, None
+
 if data_mode == "Single ticker (fund or stock)":
-    TICKER_CHOICES = [
-        "— diversified funds (sound prior) —",
-        "VTI — US total market", "VOO — S&P 500", "SPY — S&P 500",
-        "QQQ — Nasdaq-100", "DIA — Dow 30", "IWM — US small-cap",
-        "SCHD — US dividend", "VXUS — ex-US total", "VWO — emerging markets",
-        "VT — world all-cap", "BND — US bonds", "AGG — US bonds",
-        "— individual companies (weaker prior) —",
-        "AAPL — Apple", "MSFT — Microsoft", "NVDA — Nvidia", "GOOGL — Alphabet",
-        "AMZN — Amazon", "META — Meta", "TSLA — Tesla", "NFLX — Netflix",
-        "AMD — AMD", "JPM — JPMorgan Chase", "V — Visa", "WMT — Walmart",
-        "KO — Coca-Cola", "DIS — Disney", "JNJ — Johnson & Johnson",
-        "XOM — ExxonMobil", "BRK-B — Berkshire Hathaway",
-        "Other (type a ticker)…",
-    ]
+    ticker_list = US_TICKERS if market == "US" else INDIA_TICKERS
     pick = st.sidebar.selectbox(
-        "Ticker", TICKER_CHOICES, index=1,                 # default to VTI
-        help="Diversified funds (top) are the statistically sound use. Individual companies "
+        "Ticker", ticker_list, index=1,
+        help="Diversified funds/ETFs (top) are the statistically sound use. Individual companies "
              "run too, but earn a weaker-prior caveat. Pick 'Other' to type any symbol.")
     if pick.startswith("Other"):
-        ticker = st.sidebar.text_input("Custom ticker", "VTI").strip().upper()
-    elif pick.startswith("—"):                              # a section header was selected
+        default_ticker = "VTI" if market == "US" else "NIFTYBEES.NS"
+        ticker = st.sidebar.text_input("Custom ticker", default_ticker).strip().upper()
+    elif pick.startswith("---"):
         st.sidebar.info("Pick a ticker below the section header.")
         st.stop()
     else:
         ticker = pick.split(" ")[0].strip().upper()
 elif data_mode == "Portfolio (multi-asset)":
+    default_portfolio = "VTI:0.8, QQQ:0.2" if market == "US" else "NIFTYBEES.NS:0.6, HDFCBANK.NS:0.2, TCS.NS:0.2"
     portfolio = st.sidebar.text_input(
-        "Allocation", "VTI:0.8, QQQ:0.2",
+        "Allocation", default_portfolio,
         help="Weights are normalized. Components are date-aligned and resampled JOINTLY, "
              "so cross-asset correlation is preserved.").strip()
 else:
     up = st.sidebar.file_uploader("CSV with a date + close/adj-close column", type=["csv"])
     if up is not None:
         csv_bytes = up.getvalue()
+
+# currency defaults
+cur_sym = "$" if market == "US" else "₹"
+default_amount = 10_000 if market == "US" else 100_000
+amount_step = 500 if market == "US" else 10_000
 
 st.sidebar.markdown("---")
 years, blend = None, False
@@ -110,8 +157,9 @@ else:
         years = st.sidebar.slider("Years of history", 1, 30, 15)
 
 st.sidebar.markdown("---")
-amount = st.sidebar.number_input("Invest amount ($)", 100, 10_000_000, 10_000, step=500)
-threshold = st.sidebar.slider("Flag P(profit) ≥", 0.50, 0.95, 0.70, 0.01)
+amount = st.sidebar.number_input(
+    f"Invest amount ({cur_sym})", 100, 100_000_000, default_amount, step=amount_step)
+threshold = st.sidebar.slider("Flag P(profit) >=", 0.50, 0.95, 0.70, 0.01)
 haircut = st.sidebar.slider("Drift haircut (stress test)", 0.0, 1.0, 0.0, 0.05,
                             help="Shave this fraction of the historical drift to "
                                  "stress a more conservative view. 0 = use real history.")
@@ -121,32 +169,33 @@ paths = st.sidebar.select_slider("Bootstrap paths", [2000, 5000, 10000, 20000], 
 # ----------------------------------------------------------------------
 # Run
 # ----------------------------------------------------------------------
-st.title("📈 Block-Bootstrap Portfolio Risk Simulator")
-st.caption("Block-bootstrap of real return history → outcome distribution, tail risk "
+st.title("Block-Bootstrap Portfolio Risk Simulator")
+st.caption("Block-bootstrap of real return history -> outcome distribution, tail risk "
            "(VaR/CVaR), drawdown, and P(profit). Forecasts are calibrated out-of-sample "
-           "(see calibration.py). **Research tool — not investment advice.**")
+           "(see calibration.py). **Research tool -- not investment advice.**")
 
 try:
     res = run_engine(ticker, csv_bytes, years, blend, amount, paths, haircut, portfolio)
 except Exception as e:
     st.error(f"Could not run the engine: {e}")
-    st.info("If fetching by ticker failed, check the symbol or try again — the public "
+    st.info("If fetching by ticker failed, check the symbol or try again -- the public "
             "data endpoint occasionally rate-limits. Or switch to **Upload CSV**.")
     st.stop()
 
 h, p = res["history"], res["params"]
+cs = res.get("currency", spe.DEFAULT_CURRENCY)["symbol"]
 
 # ---- history / prior diagnostics -------------------------------------
-st.subheader("The prior — what this stock has actually done")
+st.subheader("The prior -- what this stock has actually done")
 c = st.columns(5)
 c[0].metric("History", f"{h['years']:.1f} yrs", f"{h['obs']:,} obs")
 c[1].metric("Annualized drift", f"{h['drift']*100:.1f}%")
 c[2].metric("Annualized vol", f"{h['vol']*100:.1f}%")
 c[3].metric("Worst day", f"{h['worst_day']*100:.1f}%")
 c[4].metric("Max drawdown", f"{h['max_drawdown']*100:.1f}%")
-st.caption(f"Source: {res['source']}  ·  sampling window: **{res['mode']}**  ·  "
-           f"block {p['block']} · {p['paths']:,} paths"
-           + (f" · drift haircut {p['haircut']*100:.0f}%" if p['haircut'] else ""))
+st.caption(f"Source: {res['source']}  |  sampling window: **{res['mode']}**  |  "
+           f"block {p['block']} | {p['paths']:,} paths"
+           + (f" | drift haircut {p['haircut']*100:.0f}%" if p['haircut'] else ""))
 
 # window composition (blend or capped window)
 if res["mode"] == "blended" or len(res["windows"]) > 1 or res["windows"][0]["years"] is not None:
@@ -165,7 +214,7 @@ st.markdown("---")
 
 # ---- P(profit)-vs-threshold indicator cards (threshold applied live) -
 st.subheader(f"P(profit) vs. your threshold ({threshold*100:.0f}%)")
-st.caption("A mechanical indicator, **not** a buy/sell signal — calibration shows P(profit) "
+st.caption("A mechanical indicator, **not** a buy/sell signal -- calibration shows P(profit) "
            "has no demonstrated skill vs a base rate. Read the risk distribution below it.")
 cols = st.columns(len(res["horizons"]))
 for col, r in zip(cols, res["horizons"]):
@@ -177,10 +226,10 @@ for col, r in zip(cols, res["horizons"]):
         else:
             st.info(f"### {r['years']}-year hold\n#### P(profit) {flag}")
         st.metric("P(profit)", f"{r['P(profit)']*100:.1f}%")
-        st.metric(f"Median ${amount:,.0f} →", f"${r['val_P50']:,.0f}",
+        st.metric(f"Median {fmt(amount, cs)} ->", fmt(r['val_P50'], cs),
                   f"{(r['val_P50']/amount-1)*100:+.0f}%")
         st.caption(
-            f"Range P10–P90: ${r['val_P10']:,.0f} → ${r['val_P90']:,.0f}\n\n"
+            f"Range P10-P90: {fmt(r['val_P10'], cs)} -> {fmt(r['val_P90'], cs)}\n\n"
             f"Beats cash@{p['cash_rate']*100:.0f}%: {r['P(beat cash)']*100:.0f}%\n\n"
             f"Worst-5% end: {r['var_ret']*100:+.0f}% (CVaR {r['cvar_ret']*100:+.0f}%)\n\n"
             f"Drawdown: median {r['maxdd_med']*100:.0f}%, bad-case {r['maxdd_p95worst']*100:.0f}%"
@@ -189,7 +238,7 @@ for col, r in zip(cols, res["horizons"]):
 st.markdown("---")
 
 # ---- probability cone ------------------------------------------------
-st.subheader(f"Probability cone — ${amount:,.0f} over {max(spe.HORIZONS_YEARS)} years")
+st.subheader(f"Probability cone -- {fmt(amount, cs)} over {max(spe.HORIZONS_YEARS)} years")
 fan = res["fan"]
 df = pd.DataFrame(fan)
 base = alt.Chart(df).encode(x=alt.X("years:Q", title="Years held"))
@@ -200,7 +249,7 @@ layers = []
 for lo, hi, op in bands:
     layers.append(
         base.mark_area(opacity=op, color="#2e7d32").encode(
-            y=alt.Y(f"{lo}:Q", title="Portfolio value ($)"), y2=f"{hi}:Q")
+            y=alt.Y(f"{lo}:Q", title=f"Portfolio value ({cs})"), y2=f"{hi}:Q")
     )
 layers.append(base.mark_line(color="#1b5e20", strokeWidth=2.5).encode(y="p50:Q"))
 invested_line = alt.Chart(pd.DataFrame({"y": [amount]})).mark_rule(
@@ -215,7 +264,7 @@ with st.expander("How to read this / limitations"):
         "- **P(profit)** = share of simulated futures ending above what you put in.\n"
         "- **VaR/CVaR** = the bad tail: where you end in the worst 5%, and its average.\n"
         "- **Drawdown** = worst peak-to-trough dip you'd sit through, even on good paths.\n"
-        "- The threshold flag is a **mechanical comparison on a historical prior — not advice "
+        "- The threshold flag is a **mechanical comparison on a historical prior -- not advice "
         "and not a trading signal** (calibration shows P(profit) has no demonstrated skill vs a "
         "base rate). A single stock can break from its history (earnings, fraud, obsolescence) in "
         "ways no bootstrap can see. All figures are **nominal** (not inflation-adjusted)."
