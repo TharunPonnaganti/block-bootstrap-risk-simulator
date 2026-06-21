@@ -402,6 +402,76 @@ def analyze(value_paths, years):
     }
 
 
+# ----------------------------------------------------------------------
+# 4b. RECURRING BUY (DCA / SIP)
+# ----------------------------------------------------------------------
+def simulate_dca(daily_simple_returns, contrib, contrib_interval):
+    """Simulate dollar-cost-averaging paths given sampled daily simple returns.
+
+    Injects `contrib` at day 0 and every `contrib_interval` trading days thereafter.
+    The daily returns are the SAME draws the lump-sum bootstrap used, so both modes
+    see identical market scenarios -- the only difference is the cash-flow timing.
+
+    Returns (value_paths [n_paths, n_periods+1], total_invested float)."""
+    n_paths, n_periods = daily_simple_returns.shape
+    values = np.empty((n_paths, n_periods + 1))
+    values[:, 0] = contrib
+
+    for t in range(1, n_periods + 1):
+        values[:, t] = values[:, t - 1] * (1.0 + daily_simple_returns[:, t - 1])
+        if t % contrib_interval == 0:
+            values[:, t] += contrib
+
+    n_contributions = 1 + n_periods // contrib_interval
+    total_invested = float(contrib * n_contributions)
+    return values, total_invested
+
+
+def analyze_dca(value_paths, contrib, contrib_interval, total_invested, ppy):
+    """Analyze DCA value paths. P(profit) and returns are relative to total_invested.
+    Cash benchmark is computed correctly for the DCA schedule: each contribution
+    compounds at CASH_RATE from its injection date to the terminal date."""
+    terminal = value_paths[:, -1]
+    n_periods = value_paths.shape[1] - 1
+    ret = terminal / total_invested - 1.0
+
+    # cash benchmark: each contribution grows at cash rate for its remaining time
+    cash_total = 0.0
+    for t in range(0, n_periods + 1, contrib_interval):
+        remaining_years = (n_periods - t) / ppy
+        cash_total += contrib * (1.0 + CASH_RATE) ** remaining_years
+
+    runmax = np.maximum.accumulate(value_paths, axis=1)
+    maxdd = (value_paths / runmax - 1.0).min(axis=1)
+
+    tail_p = (1.0 - VAR_CONF) * 100.0
+    var_ret = np.percentile(ret, tail_p)
+    cvar_mask = ret <= var_ret
+    cvar_ret = float(ret[cvar_mask].mean()) if cvar_mask.any() else float(var_ret)
+
+    n_contributions = 1 + n_periods // contrib_interval
+
+    return {
+        "P(profit)":   float((terminal > total_invested).mean()),
+        "P(beat cash)": float((terminal > cash_total).mean()),
+        "total_invested": total_invested,
+        "n_contributions": n_contributions,
+        "cash_terminal": float(cash_total),
+        "val_P5":  np.percentile(terminal, 5),
+        "val_P10": np.percentile(terminal, 10),
+        "val_P50": np.percentile(terminal, 50),
+        "val_P90": np.percentile(terminal, 90),
+        "val_P95": np.percentile(terminal, 95),
+        "total_return_P10": float(np.percentile(ret, 10)),
+        "total_return_P50": float(np.percentile(ret, 50)),
+        "total_return_P90": float(np.percentile(ret, 90)),
+        "var_ret": float(var_ret),
+        "cvar_ret": cvar_ret,
+        "maxdd_med": float(np.percentile(maxdd, 50)),
+        "maxdd_p95worst": float(np.percentile(maxdd, 5)),
+    }
+
+
 def build_fan(value_paths, ppy):
     """Downsample to ~monthly steps and return time-series percentile bands of
     portfolio value -- the probability cone for charting."""
@@ -413,6 +483,20 @@ def build_fan(value_paths, ppy):
     fan = {"years": (idx / ppy).tolist()}
     for k, q in qmap.items():
         fan[k] = np.percentile(sub, q, axis=0).tolist()
+    return fan
+
+
+def build_fan_dca(value_paths, ppy, contrib, contrib_interval):
+    """Like build_fan but also includes the rising total-invested line."""
+    fan = build_fan(value_paths, ppy)
+    n = value_paths.shape[1]
+    step = max(1, int(round(ppy / 12)))
+    idx = np.array(sorted(set(list(range(0, n, step)) + [n - 1])))
+    invested = []
+    for t in idx:
+        n_contribs = 1 + t // contrib_interval
+        invested.append(float(contrib * n_contribs))
+    fan["invested"] = invested
     return fan
 
 
@@ -439,6 +523,8 @@ def parse_args():
     p.add_argument("--paths", type=int, default=N_PATHS, help="number of bootstrap paths")
     p.add_argument("--haircut", type=float, default=DRIFT_HAIRCUT,
                    help="fraction of historical drift to remove, 0-1 (stress test)")
+    p.add_argument("--dca", type=float, default=None,
+                   help="monthly recurring contribution (SIP/DCA) -- shows side-by-side with lump sum")
     p.add_argument("--json", action="store_true", help="emit machine-readable JSON (for an app)")
     return p.parse_args()
 
@@ -543,7 +629,12 @@ def compute(args):
     # ---- simulate each horizon (mode-agnostic) -----------------------
     horizons = []
     fan = None
+    dca_horizons = []
+    dca_fan = None
     max_h = max(HORIZONS_YEARS)
+    dca_amount = getattr(args, "dca", None)
+    contrib_interval = max(1, int(round(ppy / 12)))   # ~21 trading days = monthly
+
     for years in HORIZONS_YEARS:
         n_periods = int(round(years * ppy))
         vp = simulate(n_periods)
@@ -553,9 +644,20 @@ def compute(args):
         r["flag"] = "ABOVE" if r["P(profit)"] >= args.threshold else "BELOW"
         horizons.append(r)
         if years == max_h:
-            fan = build_fan(vp, ppy)        # probability cone over the longest horizon
+            fan = build_fan(vp, ppy)
 
-    return {
+        if dca_amount:
+            daily_rets = vp[:, 1:] / vp[:, :-1] - 1.0
+            vp_dca, total_inv = simulate_dca(daily_rets, dca_amount, contrib_interval)
+            rd = analyze_dca(vp_dca, dca_amount, contrib_interval, total_inv, ppy)
+            rd["years"] = years
+            rd["n_periods"] = n_periods
+            rd["flag"] = "ABOVE" if rd["P(profit)"] >= args.threshold else "BELOW"
+            dca_horizons.append(rd)
+            if years == max_h:
+                dca_fan = build_fan_dca(vp_dca, ppy, dca_amount, contrib_interval)
+
+    result = {
         "source": source, "mode": mode,
         "currency": currency,
         "history": {"start": h_start, "end": h_end, "years": n_years_hist, "obs": obs,
@@ -567,6 +669,14 @@ def compute(args):
                    "cash_rate": CASH_RATE, "var_conf": VAR_CONF},
         "horizons": horizons, "fan": fan,
     }
+    if dca_amount:
+        result["dca"] = {
+            "contrib": dca_amount,
+            "interval_days": contrib_interval,
+            "horizons": dca_horizons,
+            "fan": dca_fan,
+        }
+    return result
 
 
 def print_report(res):
@@ -620,6 +730,34 @@ def print_report(res):
         print(f"  Drawdown along the way         : "
               f"median {r['maxdd_med']*100:.0f}% | bad-case (worst 5%) {r['maxdd_p95worst']*100:.0f}%")
         print()
+
+    # ---- DCA / SIP results (if enabled) --------------------------------
+    dca = res.get("dca")
+    if dca:
+        print("\n" + "=" * 76)
+        print(f"MONTHLY RECURRING (SIP / DCA)  --  {cs}{dca['contrib']:,.0f}/month")
+        print("=" * 76)
+        print("Same market scenarios as the lump sum above; only the cash-flow timing differs.\n")
+        for rd in dca["horizons"]:
+            years = rd["years"]
+            ti = rd["total_invested"]
+            print("#" * 76)
+            print(f"#  {years}Y RECURRING   {rd['n_contributions']} contributions   "
+                  f"total invested {cs}{ti:,.0f}   P(profit) {rd['P(profit)']*100:.1f}%")
+            print("#" * 76)
+            print(f"  Probability of profit          : {rd['P(profit)']*100:5.1f}%   "
+                  f"(portfolio > {cs}{ti:,.0f} total invested)")
+            print(f"  Probability of beating cash@{p['cash_rate']*100:.0f}% : {rd['P(beat cash)']*100:5.1f}%   "
+                  f"(portfolio > {cs}{rd['cash_terminal']:,.0f} cash equivalent)")
+            print(f"  Portfolio value after {years}y:")
+            print(f"      pessimistic  P10 : {cs}{rd['val_P10']:>12,.0f}   ({rd['total_return_P10']*100:+.0f}% on invested)")
+            print(f"      median       P50 : {cs}{rd['val_P50']:>12,.0f}   ({rd['total_return_P50']*100:+.0f}% on invested)")
+            print(f"      optimistic   P90 : {cs}{rd['val_P90']:>12,.0f}   ({rd['total_return_P90']*100:+.0f}% on invested)")
+            print(f"  Worst {(1-p['var_conf'])*100:.0f}% of outcomes (VaR)     : end <= {rd['var_ret']*100:+.0f}% on invested   "
+                  f"(CVaR {rd['cvar_ret']*100:+.0f}%)")
+            print(f"  Drawdown along the way         : "
+                  f"median {rd['maxdd_med']*100:.0f}% | bad-case (worst 5%) {rd['maxdd_p95worst']*100:.0f}%")
+            print()
 
     print("=" * 76)
     print("READING THIS:")
