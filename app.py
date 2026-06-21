@@ -192,7 +192,7 @@ except Exception as e:
     st.stop()
 
 h, p = res["history"], res["params"]
-cs = res.get("currency", {"symbol": "$", "code": "USD"})["symbol"]
+cs = res.get("currency", {"symbol": cur_sym, "code": "USD"})["symbol"]
 dca_data = res.get("dca")
 
 # ---- history / prior diagnostics -------------------------------------
