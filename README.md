@@ -192,14 +192,71 @@ Tiered model-comparison strategy, scored with CRPS and block-bootstrapped confid
 
 ---
 
-## Usage
+## Installation
 
-### Quick Start
+### Prerequisites
+
+- **Python 3.10 or higher** (tested on 3.13)
+- **pip** (comes with Python)
+- **Git** (to clone the repo)
+
+### Step 1 — Clone the repository
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+git clone https://github.com/TharunPonnaganti/block-bootstrap-risk-simulator.git
+cd block-bootstrap-risk-simulator
+```
 
+### Step 2 — Create a virtual environment (recommended)
+
+```bash
+# Windows
+python -m venv venv
+venv\Scripts\activate
+
+# macOS / Linux
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### Step 3 — Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+This installs:
+- **numpy** — core engine (required)
+- **matplotlib** — calibration plots (required)
+- **streamlit** — local dashboard UI (optional but recommended)
+
+No API keys needed. The data layer uses Python's standard library (`urllib`, `json`, `csv`) to fetch public price history from Yahoo Finance.
+
+### Step 4 — Verify the install
+
+```bash
+python qa_check.py    # Should print 22/22 checks passed
+```
+
+### Step 5 — Run it
+
+```bash
+# CLI — quick analysis
+python stock_probability_engine.py SPY
+
+# Dashboard — full interactive UI
+streamlit run app.py
+```
+
+The dashboard opens at **http://localhost:8501** in your browser.
+
+---
+
+## Usage
+
+### CLI Examples
+
+```bash
 # --- US market (default) ---
 python stock_probability_engine.py                              # VTI, US total market
 python stock_probability_engine.py SPY                          # S&P 500
@@ -209,50 +266,56 @@ python stock_probability_engine.py AAPL                         # single stock (
 # --- Indian market (NSE / BSE) ---
 python stock_probability_engine.py NIFTYBEES.NS                 # Nifty 50 ETF (NSE)
 python stock_probability_engine.py RELIANCE.NS                  # Reliance Industries (NSE)
-python stock_probability_engine.py HDFCBANK.NS                  # HDFC Bank (NSE)
 python stock_probability_engine.py --portfolio "NIFTYBEES.NS:0.6,HDFCBANK.NS:0.2,TCS.NS:0.2"
+
+# --- Monthly recurring (SIP / DCA) ---
+python stock_probability_engine.py SPY --dca 500                # $500/month alongside lump sum
+python stock_probability_engine.py NIFTYBEES.NS --dca 5000      # Rs.5,000/month SIP
 
 # Machine-readable JSON output
 python stock_probability_engine.py SPY --json
 ```
 
-Currency ($/Rs.) and risk-free rate (4% USD / 6.5% INR) are auto-detected from the ticker suffix (`.NS` = NSE, `.BO` = BSE).
+Currency (`$` / `Rs.`) and risk-free rate (4% USD / 6.5% INR) are auto-detected from the ticker suffix (`.NS` = NSE, `.BO` = BSE).
 
-### Knobs
+### CLI Options
 
-```bash
---years 15        # Cap history to last N years
---blend           # Mix return blocks across eras (5y/15y/full)
---threshold 0.7   # P(profit) threshold for ABOVE/BELOW flag
---amount 10000    # Hypothetical investment amount
---paths 10000     # Number of bootstrap paths
---haircut 0.25    # Remove 25% of historical drift (stress test)
-```
+| Flag | Default | Description |
+|---|---|---|
+| `--portfolio` | — | Multi-asset allocation, e.g. `"VTI:0.8,QQQ:0.2"` (correlation-preserving joint bootstrap) |
+| `--csv` | — | Use a local CSV export instead of Yahoo (Fidelity, Robinhood, Schwab, etc.) |
+| `--dca` | — | Monthly recurring contribution (SIP/DCA), shown side-by-side with lump sum |
+| `--years` | full | Cap history to the last N years |
+| `--blend` | off | Mix return blocks across eras (5y/15y/full) to avoid regime lock-in |
+| `--threshold` | 0.70 | P(profit) threshold for the ABOVE/BELOW indicator |
+| `--amount` | 10000 | Hypothetical lump-sum investment amount |
+| `--paths` | 10000 | Number of bootstrap paths (more = smoother, slower) |
+| `--haircut` | 0.0 | Fraction of historical drift to remove (0–1, stress test) |
+| `--json` | off | Emit machine-readable JSON |
 
 ### Calibration
 
 ```bash
-# Walk-forward backtest (writes reliability_curve.png)
-python calibration.py SPY
-
-# Different horizon
-python calibration.py SPY --horizon 3
-
-# Portfolio calibration
-python calibration.py --portfolio "VTI:0.8,QQQ:0.2"
+python calibration.py SPY                                # 1-year walk-forward backtest
+python calibration.py SPY --horizon 3                    # 3-year horizon
+python calibration.py --portfolio "VTI:0.8,QQQ:0.2"     # portfolio calibration
 ```
 
-### QA Tests
+Writes `reliability_curve.png` and prints Brier Score, Brier Skill Score, PIT coverage.
+
+### Dashboard
 
 ```bash
-python qa_check.py    # 22 invariant checks -- all should pass
+streamlit run app.py
 ```
 
-### Local Dashboard
-
-```bash
-python -m streamlit run app.py    # Opens at http://localhost:8501
-```
+Features:
+- **Market toggle** (US / India) with pre-populated ticker dropdowns
+- **Portfolio mode** with free-text allocation input
+- **Monthly recurring (SIP/DCA)** — side-by-side comparison with lump sum
+- **Two probability cones** — lump sum (green) and recurring (blue) with invested-amount lines
+- **Live threshold slider** — simulation is cached, only the flag updates instantly
+- **Currency-aware** — auto-detects `$` or `₹` from ticker
 
 ---
 
@@ -260,10 +323,10 @@ python -m streamlit run app.py    # Opens at http://localhost:8501
 
 | File | Role |
 |---|---|
-| `stock_probability_engine.py` | Core engine: data layer (Yahoo/CSV), circular block bootstrap (single + era-blended + joint portfolio), risk metrics (VaR/CVaR/drawdown), CLI and JSON output |
+| `stock_probability_engine.py` | Core engine: data layer (Yahoo/CSV), circular block bootstrap (single + era-blended + joint portfolio), lump-sum and DCA/SIP simulation, risk metrics (VaR/CVaR/drawdown), CLI and JSON output |
 | `calibration.py` | Walk-forward backtest: expanding-window calibration, reliability curve, Brier Score, Brier Skill Score, PIT coverage |
 | `qa_check.py` | 22 statistical-invariant tests: engine determinism, scale-invariance, tail-risk ordering, portfolio correlation preservation, calibration math |
-| `app.py` | Local Streamlit dashboard: probability cone, risk cards, ticker dropdown, live threshold slider |
+| `app.py` | Local Streamlit dashboard: side-by-side lump sum vs recurring, dual probability cones, risk cards, market toggle (US/India), live threshold slider |
 | `requirements.txt` | numpy, matplotlib, streamlit (optional) |
 | `reliability_curve.png` | Sample calibration output (SPY, 1-year horizon) |
 
