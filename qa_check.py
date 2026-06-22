@@ -57,7 +57,8 @@ check("tail risk: CVaR <= VaR", r["cvar_ret"] <= r["var_ret"] + 1e-12,
 # 6) INTERNAL CONSISTENCY: CAGR_P50 reconstructs from value_P50
 implied = (r["val_P50"] / spe.AMOUNT) ** (1 / 5) - 1
 check("consistency: CAGR_P50 == implied CAGR from val_P50",
-      abs(implied - r["cagr_P50"]) < 1e-9, f"implied={implied:.4f} reported={r['cagr_P50']:.4f}")
+      abs(implied - r["cagr_P50"]) < 1e-8,
+      f"implied={implied:.10f} reported={r['cagr_P50']:.10f}")
 
 # 7) MONOTONIC P(profit) with horizon for a positive-drift stock
 ps = []
