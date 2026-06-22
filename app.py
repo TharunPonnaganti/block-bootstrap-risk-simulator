@@ -38,7 +38,7 @@ def run_engine(ticker, csv_bytes, years, blend, amount, paths, haircut, portfoli
     args = SimpleNamespace(
         ticker=(ticker or "VTI"), csv=csv_path, years=years, blend=blend,
         portfolio=portfolio, threshold=0.5, amount=float(amount), paths=int(paths),
-        haircut=float(haircut), dca=dca, json=False,
+        haircut=float(haircut), dca=dca, dca_start="begin", json=False,
     )
     return spe.compute(args)
 

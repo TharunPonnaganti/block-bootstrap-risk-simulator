@@ -118,7 +118,7 @@ def walk_forward(log_ret, ppy, block, h_years=1.0, step=63,
         raise RuntimeError(f"Not enough history: need > {min_train + H} returns, have {n}.")
 
     rng = np.random.default_rng(seed)
-    spe.AMOUNT = 1.0                                     # P(profit) is scale-free; use unit base
+    cal_amount = 1.0                                     # P(profit) is scale-free; use unit base
     C = np.concatenate([[0.0], np.cumsum(log_ret)])     # C[i] = sum(log_ret[:i]) for fast window sums
     base_eligible_oi = min_base_windows * H             # min training length for a stable base rate
 
@@ -132,8 +132,8 @@ def walk_forward(log_ret, ppy, block, h_years=1.0, step=63,
             n_excluded += 1
             continue
         train = log_ret[:oi]                            # only data available at the origin
-        vp = spe.bootstrap_blended([train], [1.0], H, n_paths, block, rng)
-        mult = vp[:, -1] / spe.AMOUNT                   # terminal multiple distribution
+        vp = spe.bootstrap_blended([train], [1.0], H, n_paths, block, rng, amount=cal_amount)
+        mult = vp[:, -1] / cal_amount                    # terminal multiple distribution
         probs.append(float((mult > 1.0).mean()))
         # OUT-OF-SAMPLE benchmark: positive-H-window frequency in TRAINING data only.
         # window ending at j (covers returns[j-H:j]) is positive iff C[j] - C[j-H] > 0.
@@ -146,13 +146,20 @@ def walk_forward(log_ret, ppy, block, h_years=1.0, step=63,
         outcomes.append(1.0 if realized > 1.0 else 0.0)
         elig_origins.append(oi)
 
+    if not elig_origins:
+        raise RuntimeError(
+            f"No eligible origins: all {len(raw_origins)} raw origins were excluded because "
+            f"their training windows had fewer than {min_base_windows} non-overlapping "
+            f"{h_years}-year windows. Try a shorter horizon, more history, or fewer "
+            f"min_base_windows.")
+
     probs = np.array(probs); bench = np.array(bench)
     outcomes = np.array(outcomes); realized_mult = np.array(realized_mult)
     fpct = {L: np.array(v) for L, v in fpct.items()}
 
     pred, obs, cnt = reliability_curve(probs, outcomes)
     bs_model = brier_score(probs, outcomes)
-    bs_bench = brier_score(bench, outcomes)             # OOS climatology -- no look-ahead
+    bs_bench = brier_score(bench, outcomes)
     bss = float(1.0 - bs_model / bs_bench) if bs_bench > 0 else float("nan")
     cov = pit_coverage(fpct, realized_mult)
 

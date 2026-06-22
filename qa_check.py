@@ -99,6 +99,23 @@ check("portfolio: weights normalize to 1",
       abs(wv.sum() - 1) < 1e-12 and abs(wv[0] - 0.75) < 1e-9
       and abs(sum(wmap_eq.values()) - 1) < 1e-12 and all(abs(v - 0.25) < 1e-9 for v in wmap_eq.values()))
 
+# 11b) WEIGHT VALIDATION: reject zero, negative, mixed explicit/implicit
+_bad_cases = [
+    ("VTI:0,QQQ:1", "zero weight"),
+    ("VTI:-0.5,QQQ:1.5", "negative weight"),
+    ("VTI:0.8,QQQ", "mixed explicit/implicit"),
+    ("", "empty spec"),
+]
+_all_rejected = True
+for _spec, _reason in _bad_cases:
+    try:
+        spe.parse_weights(_spec)
+        _all_rejected = False
+    except (ValueError, Exception):
+        pass
+check("portfolio: weight validation rejects invalid specs",
+      _all_rejected, f"tested: {[r for _, r in _bad_cases]}")
+
 # 12) JOINT resampling PRESERVES cross-asset correlation; INDEPENDENT destroys it
 _n, _rho = 4000, 0.6
 _z0 = np.random.default_rng(1).standard_normal(_n)

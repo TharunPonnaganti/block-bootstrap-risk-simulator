@@ -82,7 +82,7 @@ source venv/bin/activate
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Verify -- should print 22/22 checks passed
+# 4. Verify -- should print 23/23 checks passed
 python qa_check.py
 
 # 5. Run
@@ -228,7 +228,7 @@ The dashboard includes:
 
 ### Walk-Forward Calibration (`calibration.py`)
 
-The bootstrap produces internally consistent probabilities (validated by 22 invariant tests). But that doesn't tell you whether a "72% chance of profit" is actually right. This module checks by **stepping through history**:
+The bootstrap produces internally consistent probabilities (validated by 23 invariant tests). But that doesn't tell you whether a "72% chance of profit" is actually right. This module checks by **stepping through history**:
 
 1. At each point in time, fit the bootstrap using **only data available up to that point**
 2. Forecast P(profit) and outcome percentiles for the next H years
@@ -248,10 +248,10 @@ The bootstrap produces internally consistent probabilities (validated by 22 inva
 
 ### QA Suite (`qa_check.py`)
 
-22 invariant tests across three areas:
+23 invariant tests across three areas:
 
 - **Engine (12 tests):** determinism, unbiased drift, drawdown sign, scale invariance, VaR/CVaR ordering, CAGR consistency, monotonic P(profit), stress tests, error handling, robustness
-- **Portfolio (3 tests):** weights sum to 1, joint resampling preserves correlation, independent resampling destroys it
+- **Portfolio (4 tests):** weights sum to 1, weight validation rejects invalid specs (zero/negative/mixed), joint resampling preserves correlation, independent resampling destroys it
 - **Calibration (6 tests):** perfect forecast scores 0, coin-flip scores 0.25, base-rate identity, BSS=0 for naive model, informative forecaster beats baseline, bucket counts sum to N
 
 ---
@@ -297,7 +297,7 @@ The bootstrap produces internally consistent probabilities (validated by 22 inva
 |---|---|
 | `stock_probability_engine.py` | Core engine: data fetching (Yahoo/CSV), circular block bootstrap (single + blended + portfolio), DCA/SIP simulation, risk metrics (VaR/CVaR/drawdown), CLI output |
 | `calibration.py` | Walk-forward backtest: expanding-window calibration, Brier Score, Brier Skill Score, reliability curve, PIT coverage |
-| `qa_check.py` | 22 statistical tests: engine determinism, scale invariance, tail-risk ordering, portfolio correlation, calibration math |
+| `qa_check.py` | 23 statistical tests: engine determinism, scale invariance, tail-risk ordering, portfolio correlation, weight validation, calibration math |
 | `app.py` | Streamlit dashboard: lump sum vs. recurring comparison, probability cones, risk cards, market toggle |
 | `requirements.txt` | Python dependencies (numpy, matplotlib, streamlit, pandas, altair) |
 | `reliability_curve.png` | Sample calibration output (SPY, 1-year horizon) |

@@ -176,20 +176,39 @@ def load_prices(ticker, csv_path):
 
 def parse_weights(spec):
     """Parse a portfolio spec into {TICKER: weight}.
-    'VTI:0.8,QQQ:0.2' -> {'VTI':0.8,'QQQ':0.2};  'VTI,QQQ' -> equal-weight."""
+    'VTI:0.8,QQQ:0.2' -> {'VTI':0.8,'QQQ':0.2};  'VTI,QQQ' -> equal-weight.
+    Validates: no mixing explicit/implicit, all weights finite and positive,
+    positive sum. Long-only by default."""
     out = {}
     for part in spec.split(","):
         part = part.strip()
         if not part:
             continue
         if ":" in part:
-            t, w = part.split(":")
+            t, w = part.split(":", 1)
             out[t.strip().upper()] = float(w)
         else:
             out[part.strip().upper()] = None
-    if any(w is None for w in out.values()):          # equal-weight if any unspecified
+    if not out:
+        raise ValueError("Empty portfolio spec.")
+    has_explicit = any(w is not None for w in out.values())
+    has_implicit = any(w is None for w in out.values())
+    if has_explicit and has_implicit:
+        raise ValueError(
+            f"Mixed explicit/implicit weights: {spec!r}. "
+            "Either specify all weights (VTI:0.8,QQQ:0.2) or none (VTI,QQQ).")
+    if has_implicit:
         eq = 1.0 / len(out)
         out = {t: eq for t in out}
+    for t, w in out.items():
+        if not np.isfinite(w):
+            raise ValueError(f"Weight for {t} is not finite: {w}")
+        if w <= 0:
+            raise ValueError(
+                f"Weight for {t} must be positive, got {w}. "
+                "Short positions are not supported.")
+    if sum(out.values()) <= 0:
+        raise ValueError(f"Portfolio weights must sum to a positive number, got {sum(out.values())}.")
     return out
 
 
@@ -282,71 +301,71 @@ def _block_indices(lengths, weights, n_periods, n_paths, block, rng):
     return (local + Osel[:, :, None]).reshape(n_paths, nblocks * block)[:, :n_periods]
 
 
-def bootstrap_blended(windows, weights, n_periods, n_paths, block, rng, drift_haircut=0.0):
+def bootstrap_blended(windows, weights, n_periods, n_paths, block, rng,
+                      drift_haircut=0.0, amount=None):
     """Single-series circular moving-block bootstrap with BLOCK-LEVEL era mixing.
 
-    `windows` is a list of 1-D log-return arrays (one per era); `weights` are the
-    probabilities of drawing each block from each era. A single simulated path can
-    stitch a calm 2017 stretch onto a 2008-style crash block -- the future isn't
-    locked into one regime. Returns (n_paths, n_periods+1) VALUE paths (incl. the
-    day-0 start). A single window with weight 1.0 reduces to a plain moving-block
-    bootstrap."""
+    Returns (n_paths, n_periods+1) VALUE paths. `amount` sets the starting value;
+    defaults to the module-level AMOUNT for backward compatibility."""
+    amt = AMOUNT if amount is None else amount
     procs = []
     for w in windows:
         r = np.asarray(w, dtype=float)
         if drift_haircut:
             r = r - drift_haircut * r.mean()
         procs.append(r)
-    pool = np.concatenate(procs)                                   # all eras end-to-end
+    pool = np.concatenate(procs)
     idx = _block_indices([len(r) for r in procs], weights, n_periods, n_paths, block, rng)
     cum = np.cumsum(pool[idx], axis=1)
-    paths = AMOUNT * np.exp(cum)
-    return np.concatenate([np.full((n_paths, 1), AMOUNT), paths], axis=1)
+    paths = amt * np.exp(cum)
+    return np.concatenate([np.full((n_paths, 1), amt), paths], axis=1)
 
 
-def bootstrap_terminal(log_returns, n_periods, n_paths, block, rng, drift_haircut=0.0):
+def bootstrap_terminal(log_returns, n_periods, n_paths, block, rng,
+                       drift_haircut=0.0, amount=None):
     """Single-window moving-block bootstrap (thin wrapper over bootstrap_blended)."""
-    return bootstrap_blended([log_returns], [1.0], n_periods, n_paths, block, rng, drift_haircut)
+    return bootstrap_blended([log_returns], [1.0], n_periods, n_paths, block, rng,
+                             drift_haircut, amount=amount)
 
 
-def bootstrap_portfolio(returns_matrix, weights_vec, n_periods, n_paths, block, rng, drift_haircut=0.0):
+def bootstrap_portfolio(returns_matrix, weights_vec, n_periods, n_paths, block, rng,
+                        drift_haircut=0.0, amount=None):
     """Correlation-preserving JOINT block bootstrap for a multi-asset portfolio.
 
-    returns_matrix : (n_obs, n_assets) date-ALIGNED SIMPLE returns.
-    weights_vec    : (n_assets,) portfolio weights (should sum to 1).
-
-    One block-index array is drawn and applied to EVERY asset column, so each
-    resampled timestep is a real historical cross-section -- the cross-asset
-    correlation structure is preserved exactly, with no Cholesky / Gaussian
-    assumption. Rebalanced EVERY period (daily for daily data) to constant weights:
-    per-period portfolio simple return = cross-section @ weights. Returns
-    (n_paths, n_periods+1) value paths. Reduces to the single-series engine when
-    n_assets == 1 and weight == 1."""
+    One block-index array is applied to EVERY asset column simultaneously,
+    preserving cross-asset correlation exactly. Rebalanced every period to
+    constant weights. `amount` sets the starting value; defaults to module-level
+    AMOUNT."""
+    amt = AMOUNT if amount is None else amount
     R = np.asarray(returns_matrix, dtype=float)
     if drift_haircut:
         R = R - drift_haircut * R.mean(axis=0)
     idx = _block_indices([R.shape[0]], [1.0], n_periods, n_paths, block, rng)
-    port_r = R[idx] @ np.asarray(weights_vec, dtype=float)         # (n_paths, n_periods)
-    paths = AMOUNT * np.cumprod(1.0 + port_r, axis=1)
-    return np.concatenate([np.full((n_paths, 1), AMOUNT), paths], axis=1)
+    port_r = R[idx] @ np.asarray(weights_vec, dtype=float)
+    paths = amt * np.cumprod(1.0 + port_r, axis=1)
+    return np.concatenate([np.full((n_paths, 1), amt), paths], axis=1)
 
 
-def analyze(value_paths, years):
+def analyze(value_paths, years, amount=None, cash_rate=None):
+    """Compute risk metrics from simulated value paths. Uses explicit amount/cash_rate
+    when provided; falls back to module globals for backward compatibility."""
+    amt = AMOUNT if amount is None else amount
+    cr = CASH_RATE if cash_rate is None else cash_rate
     terminal = value_paths[:, -1]
-    ret = terminal / AMOUNT - 1.0
-    cagr = (terminal / AMOUNT) ** (1.0 / years) - 1.0
+    ret = terminal / amt - 1.0
+    cagr = (terminal / amt) ** (1.0 / years) - 1.0
 
     runmax = np.maximum.accumulate(value_paths, axis=1)
     maxdd = (value_paths / runmax - 1.0).min(axis=1)
 
-    tail_p = (1.0 - VAR_CONF) * 100.0          # e.g. 5
-    var_ret = np.percentile(ret, tail_p)        # outcome at the tail percentile
-    cvar_ret = ret[ret <= var_ret].mean()       # mean of the worst tail
-    cash_factor = (1.0 + CASH_RATE) ** years
+    tail_p = (1.0 - VAR_CONF) * 100.0
+    var_ret = np.percentile(ret, tail_p)
+    cvar_ret = ret[ret <= var_ret].mean()
+    cash_factor = (1.0 + cr) ** years
 
     return {
-        "P(profit)":   float((terminal > AMOUNT).mean()),
-        "P(beat cash)": float((terminal > AMOUNT * cash_factor).mean()),
+        "P(profit)":   float((terminal > amt).mean()),
+        "P(beat cash)": float((terminal > amt * cash_factor).mean()),
         "val_P5":  np.percentile(terminal, 5),
         "val_P10": np.percentile(terminal, 10),
         "val_P50": np.percentile(terminal, 50),
@@ -366,41 +385,53 @@ def analyze(value_paths, years):
 # ----------------------------------------------------------------------
 # 4b. RECURRING BUY (DCA / SIP)
 # ----------------------------------------------------------------------
-def simulate_dca(daily_simple_returns, contrib, contrib_interval):
+def simulate_dca(daily_simple_returns, contrib, contrib_interval, start="begin"):
     """Simulate dollar-cost-averaging paths given sampled daily simple returns.
 
-    Injects `contrib` at day 0 and every `contrib_interval` trading days thereafter.
-    The daily returns are the SAME draws the lump-sum bootstrap used, so both modes
-    see identical market scenarios -- the only difference is the cash-flow timing.
+    start='begin': first contribution at day 0 (1 initial + N monthly).
+    start='end':   first contribution at end of month 1 (N monthly, no initial).
 
-    Returns (value_paths [n_paths, n_periods+1], total_invested float)."""
+    Returns (value_paths, total_invested, n_contributions)."""
     n_paths, n_periods = daily_simple_returns.shape
     values = np.empty((n_paths, n_periods + 1))
-    values[:, 0] = contrib
+
+    if start == "begin":
+        values[:, 0] = contrib
+        initial = 1
+    else:
+        values[:, 0] = 0.0
+        initial = 0
 
     for t in range(1, n_periods + 1):
         values[:, t] = values[:, t - 1] * (1.0 + daily_simple_returns[:, t - 1])
         if t % contrib_interval == 0:
             values[:, t] += contrib
 
-    n_contributions = 1 + n_periods // contrib_interval
+    n_monthly = n_periods // contrib_interval
+    n_contributions = initial + n_monthly
     total_invested = float(contrib * n_contributions)
-    return values, total_invested
+    return values, total_invested, n_contributions
 
 
-def analyze_dca(value_paths, contrib, contrib_interval, total_invested, ppy):
+def analyze_dca(value_paths, contrib, contrib_interval, total_invested, ppy,
+                cash_rate=None, start="begin"):
     """Analyze DCA value paths. P(profit) and returns are relative to total_invested.
-    Cash benchmark is computed correctly for the DCA schedule: each contribution
-    compounds at CASH_RATE from its injection date to the terminal date."""
+    Cash benchmark computes each contribution compounding from its injection date."""
+    cr = CASH_RATE if cash_rate is None else cash_rate
     terminal = value_paths[:, -1]
     n_periods = value_paths.shape[1] - 1
     ret = terminal / total_invested - 1.0
 
-    # cash benchmark: each contribution grows at cash rate for its remaining time
+    n_contributions = int(round(total_invested / contrib))
+    # build injection schedule matching simulate_dca's logic
+    if start == "begin":
+        injection_days = [0] + list(range(contrib_interval, n_periods + 1, contrib_interval))
+    else:
+        injection_days = list(range(contrib_interval, n_periods + 1, contrib_interval))
     cash_total = 0.0
-    for t in range(0, n_periods + 1, contrib_interval):
+    for t in injection_days:
         remaining_years = (n_periods - t) / ppy
-        cash_total += contrib * (1.0 + CASH_RATE) ** remaining_years
+        cash_total += contrib * (1.0 + cr) ** remaining_years
 
     runmax = np.maximum.accumulate(value_paths, axis=1)
     maxdd = (value_paths / runmax - 1.0).min(axis=1)
@@ -409,8 +440,6 @@ def analyze_dca(value_paths, contrib, contrib_interval, total_invested, ppy):
     var_ret = np.percentile(ret, tail_p)
     cvar_mask = ret <= var_ret
     cvar_ret = float(ret[cvar_mask].mean()) if cvar_mask.any() else float(var_ret)
-
-    n_contributions = 1 + n_periods // contrib_interval
 
     return {
         "P(profit)":   float((terminal > total_invested).mean()),
@@ -486,27 +515,29 @@ def parse_args():
                    help="fraction of historical drift to remove, 0-1 (stress test)")
     p.add_argument("--dca", type=float, default=None,
                    help="monthly recurring contribution (SIP/DCA) -- shows side-by-side with lump sum")
+    p.add_argument("--dca-start", choices=["begin", "end"], default="begin",
+                   help="'begin' = first contribution at day 0 (1 initial + N monthly); "
+                        "'end' = first contribution at end of month 1 (N monthly, no initial)")
     p.add_argument("--json", action="store_true", help="emit machine-readable JSON (for an app)")
     return p.parse_args()
 
 
 def compute(args):
-    """Run the engine and return a structured results dict consumed by the text
-    report and the --json output. Handles three input modes -- a diversified fund,
-    a single stock (weaker prior), or a multi-asset --portfolio -- and returns the
-    SAME output keys for all three so app.py / calibration.py stay agnostic."""
+    """Run the engine and return a structured results dict. Passes amount and
+    cash_rate explicitly to all subroutines (no reliance on mutable globals)."""
     global AMOUNT, CASH_RATE
-    AMOUNT = args.amount                         # analyze() / bootstrap read this global
+    amt = float(args.amount)
+    AMOUNT = amt                                 # set globals for backward compat only
     rng = np.random.default_rng(SEED)
     portfolio = getattr(args, "portfolio", None)
 
-    # detect currency from ticker/portfolio
     if portfolio:
         first_ticker = list(parse_weights(portfolio).keys())[0]
         currency = detect_currency(first_ticker)
     else:
         currency = detect_currency(getattr(args, "ticker", None) or TICKER)
-    CASH_RATE = currency["cash_rate"]
+    cr = currency["cash_rate"]
+    CASH_RATE = cr
 
     if portfolio:
         # -------- multi-asset: correlation-preserving joint bootstrap ----
@@ -533,7 +564,7 @@ def compute(args):
             warnings.append(f"NO REAL DRAWDOWN in overlap (worst {hist_mdd*100:.0f}%): likely all-bull; downside understated.")
 
         def simulate(n_periods):
-            return bootstrap_portfolio(R, w, n_periods, args.paths, block, rng, args.haircut)
+            return bootstrap_portfolio(R, w, n_periods, args.paths, block, rng, args.haircut, amount=amt)
     else:
         # -------- single series (diversified fund OR single stock) -------
         dates, prices, source = load_prices(args.ticker, args.csv)
@@ -585,7 +616,7 @@ def compute(args):
             warnings.append("BLEND active: recent-era weighting is balanced against older crash regimes (mitigates all-bull bias).")
 
         def simulate(n_periods):
-            return bootstrap_blended(windows, weights, n_periods, args.paths, block, rng, args.haircut)
+            return bootstrap_blended(windows, weights, n_periods, args.paths, block, rng, args.haircut, amount=amt)
 
     # ---- simulate each horizon (mode-agnostic) -----------------------
     horizons = []
@@ -594,12 +625,13 @@ def compute(args):
     dca_fan = None
     max_h = max(HORIZONS_YEARS)
     dca_amount = getattr(args, "dca", None)
+    dca_start = getattr(args, "dca_start", "begin")
     contrib_interval = max(1, int(round(ppy / 12)))   # ~21 trading days = monthly
 
     for years in HORIZONS_YEARS:
         n_periods = int(round(years * ppy))
         vp = simulate(n_periods)
-        r = analyze(vp, years)
+        r = analyze(vp, years, amount=amt, cash_rate=cr)
         r["years"] = years
         r["n_periods"] = n_periods
         r["flag"] = "ABOVE" if r["P(profit)"] >= args.threshold else "BELOW"
@@ -609,11 +641,14 @@ def compute(args):
 
         if dca_amount:
             daily_rets = vp[:, 1:] / vp[:, :-1] - 1.0
-            vp_dca, total_inv = simulate_dca(daily_rets, dca_amount, contrib_interval)
-            rd = analyze_dca(vp_dca, dca_amount, contrib_interval, total_inv, ppy)
+            vp_dca, total_inv, n_contribs = simulate_dca(
+                daily_rets, dca_amount, contrib_interval, start=dca_start)
+            rd = analyze_dca(vp_dca, dca_amount, contrib_interval, total_inv, ppy,
+                            cash_rate=cr, start=dca_start)
             rd["years"] = years
             rd["n_periods"] = n_periods
             rd["flag"] = "ABOVE" if rd["P(profit)"] >= args.threshold else "BELOW"
+            rd["dca_start"] = dca_start
             dca_horizons.append(rd)
             if years == max_h:
                 dca_fan = build_fan_dca(vp_dca, ppy, dca_amount, contrib_interval)
@@ -698,12 +733,19 @@ def print_report(res):
         print("\n" + "=" * 76)
         print(f"MONTHLY RECURRING (SIP / DCA)  --  {cs}{dca['contrib']:,.0f}/month")
         print("=" * 76)
-        print("Same market scenarios as the lump sum above; only the cash-flow timing differs.\n")
+        dca_mode = dca["horizons"][0].get("dca_start", "begin") if dca["horizons"] else "begin"
+        timing_label = "1 initial + monthly" if dca_mode == "begin" else "monthly (no initial)"
+        print(f"Schedule: {timing_label}. Same market scenarios as lump sum; only cash-flow timing differs.\n")
         for rd in dca["horizons"]:
             years = rd["years"]
             ti = rd["total_invested"]
+            nc = rd["n_contributions"]
+            if dca_mode == "begin":
+                sched = f"1 initial + {nc - 1} monthly = {nc}"
+            else:
+                sched = f"{nc} monthly"
             print("#" * 76)
-            print(f"#  {years}Y RECURRING   {rd['n_contributions']} contributions   "
+            print(f"#  {years}Y RECURRING   {sched} contributions   "
                   f"total invested {cs}{ti:,.0f}   P(profit) {rd['P(profit)']*100:.1f}%")
             print("#" * 76)
             print(f"  Probability of profit          : {rd['P(profit)']*100:5.1f}%   "
