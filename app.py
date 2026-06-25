@@ -162,11 +162,21 @@ else:
     dca_amount = None
 
 st.sidebar.markdown("---")
-threshold = st.sidebar.slider("Flag P(profit) >=", 0.50, 0.95, 0.70, 0.01)
+threshold = st.sidebar.slider("Flag P(profit) >=", 0.50, 0.95, 0.70, 0.01,
+                              help="The cutoff for the above/below flag on each horizon. "
+                                   "Higher (e.g. 0.90) = stricter, so fewer horizons get "
+                                   "flagged; lower (e.g. 0.55) = looser, so more do. It only "
+                                   "moves the flag -- the simulation itself does not change. "
+                                   "A display convenience, not a buy/sell signal.")
 haircut = st.sidebar.slider("Drift haircut (stress test)", 0.0, 1.0, 0.0, 0.05,
-                            help="Shave this fraction of the historical drift to "
-                                 "stress a more conservative view. 0 = use real history.")
-paths = st.sidebar.select_slider("Bootstrap paths", [2000, 5000, 10000, 20000], value=10000)
+                            help="Shave this fraction of the historical drift to stress a "
+                                 "more conservative view. 0 = keep the real historical drift; "
+                                 "1 = remove all drift, so paths fluctuate around flat "
+                                 "(median growth approx. 0, P(profit) approx. 50%). Values "
+                                 "in between partially dampen the trend.")
+paths = st.sidebar.select_slider("Bootstrap paths", [2000, 5000, 10000, 20000], value=10000,
+                                 help="Number of simulated futures generated. More paths give "
+                                      "smoother, more stable percentiles but take longer to run.")
 
 
 # ----------------------------------------------------------------------
@@ -193,11 +203,25 @@ dca_data = res.get("dca")
 # ---- history / prior diagnostics -------------------------------------
 st.subheader("The prior -- what this stock has actually done")
 c = st.columns(5)
-c[0].metric("History", f"{h['years']:.1f} yrs", f"{h['obs']:,} obs")
-c[1].metric("Annualized drift", f"{h['drift']*100:.1f}%")
-c[2].metric("Annualized vol", f"{h['vol']*100:.1f}%")
-c[3].metric("Worst day", f"{h['worst_day']*100:.1f}%")
-c[4].metric("Max drawdown", f"{h['max_drawdown']*100:.1f}%")
+c[0].metric("History", f"{h['years']:.1f} yrs", f"{h['obs']:,} obs",
+            help="Length of price history used: calendar years and number of trading-day "
+                 "observations. More history means more real return blocks to resample from.")
+c[1].metric("Annualized drift", f"{h['drift']*100:.1f}%",
+            help="Geometric mean return, annualized, over the sampling window -- the long-run "
+                 "growth rate baked into the bootstrap. Positive = the asset grew on average; "
+                 "negative = it declined.")
+c[2].metric("Annualized vol", f"{h['vol']*100:.1f}%",
+            help="Annualized standard deviation of returns -- how much the price swings. "
+                 "Higher = bigger swings and a wider outcome cone; lower = steadier and a "
+                 "narrower cone.")
+c[3].metric("Worst day", f"{h['worst_day']*100:.1f}%",
+            help="Largest single-day loss actually observed in this history, shown as a "
+                 "negative percentage (e.g. -11% means the price fell 11% in one day).")
+c[4].metric("Max drawdown", f"{h['max_drawdown']*100:.1f}%",
+            help="Largest peak-to-trough decline actually observed in this history -- how far "
+                 "the price fell from a previous high before recovering. Shown as a negative "
+                 "percentage; a deeper (more negative) value means a more painful historical "
+                 "fall.")
 st.caption(f"Source: {res['source']}  |  sampling window: **{res['mode']}**  |  "
            f"block {p['block']} | {p['paths']:,} paths"
            + (f" | drift haircut {p['haircut']*100:.0f}%" if p['haircut'] else ""))
@@ -231,9 +255,15 @@ for col, r in zip(cols, res["horizons"]):
             st.success(f"### {r['years']}-year hold\n#### P(profit) {flag}")
         else:
             st.info(f"### {r['years']}-year hold\n#### P(profit) {flag}")
-        st.metric("P(profit)", f"{r['P(profit)']*100:.1f}%")
+        st.metric("P(profit)", f"{r['P(profit)']*100:.1f}%",
+                  help="Share of simulated futures ending above what you invested, from 0% to "
+                       "100%. Higher = more paths end in profit; 50% means roughly even odds. "
+                       "Checked out-of-sample (see calibration.py); best read as a risk "
+                       "indicator, not a directional bet.")
         st.metric(f"Median {fmt(amount, cs)} ->", fmt(r['val_P50'], cs),
-                  f"{(r['val_P50']/amount-1)*100:+.0f}%")
+                  f"{(r['val_P50']/amount-1)*100:+.0f}%",
+                  help="Median (P50) ending value across all simulated paths -- half the "
+                       "outcomes land above this, half below.")
         st.caption(
             f"Range P10-P90: {fmt(r['val_P10'], cs)} -> {fmt(r['val_P90'], cs)}\n\n"
             f"Beats cash@{p['cash_rate']*100:.0f}%: {r['P(beat cash)']*100:.0f}%\n\n"
@@ -260,11 +290,18 @@ if dca_data:
                 st.success(f"### {rd['years']}-year SIP\n#### P(profit) {flag}")
             else:
                 st.info(f"### {rd['years']}-year SIP\n#### P(profit) {flag}")
-            st.metric("P(profit)", f"{rd['P(profit)']*100:.1f}%")
+            st.metric("P(profit)", f"{rd['P(profit)']*100:.1f}%",
+                      help="Share of simulated futures where the portfolio ends above total "
+                           "invested, from 0% to 100%. Higher = more paths end in profit; 50% "
+                           "means roughly even odds. Note: DCA P(profit) is uncalibrated -- "
+                           "calibration was done on lump-sum P(profit).")
             st.metric(f"Total invested", fmt(ti, cs),
-                      f"{rd['n_contributions']} contributions")
+                      f"{rd['n_contributions']} contributions",
+                      help="Sum of all monthly contributions made over this horizon.")
             st.metric(f"Median portfolio ->", fmt(rd['val_P50'], cs),
-                      f"{rd['total_return_P50']*100:+.0f}% on invested")
+                      f"{rd['total_return_P50']*100:+.0f}% on invested",
+                      help="Median (P50) portfolio value across simulated paths, and its "
+                           "return measured against total amount invested.")
             st.caption(
                 f"Range P10-P90: {fmt(rd['val_P10'], cs)} -> {fmt(rd['val_P90'], cs)}\n\n"
                 f"Beats cash@{p['cash_rate']*100:.0f}%: {rd['P(beat cash)']*100:.0f}%\n\n"
@@ -299,7 +336,7 @@ with col_lump:
     invested_line = alt.Chart(pd.DataFrame({"y": [amount]})).mark_rule(
         color="gray", strokeDash=[5, 5]).encode(y="y:Q")
     st.altair_chart(alt.layer(*layers, invested_line).properties(height=350).interactive(),
-                    use_container_width=True)
+                    width="stretch")
     st.caption("Dashed line = amount invested (above it = profit).")
 
 # ---- DCA cone --------------------------------------------------------
@@ -321,7 +358,7 @@ if dca_data:
             x="years:Q", y="invested:Q")
         st.altair_chart(
             alt.layer(*layers_d, invested_step).properties(height=350).interactive(),
-            use_container_width=True)
+            width="stretch")
         st.caption("Dashed line = total invested (rises with each monthly contribution).")
 
 with st.expander("How to read this / limitations"):
