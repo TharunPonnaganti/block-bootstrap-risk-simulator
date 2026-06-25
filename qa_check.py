@@ -177,6 +177,52 @@ check("calibration: informative forecaster beats base rate (BSS>0)",
 _pred, _obs, _cnt = cal.reliability_curve(_tp, _out)
 check("calibration: reliability bucket counts sum to N", int(_cnt.sum()) == _out.size)
 
+# ======================================================================
+# REGRESSION TESTS for the diagnostic-run fixes (classification + warnings)
+# All inputs synthetic -> deterministic, no network.
+# ======================================================================
+# 20) (#1) Diversified classification: broad ETFs that were previously MISSING are
+#     now classified diversified; genuine single names are not.
+_should_be_div = ["QQQM", "VOO", "IVV", "VTI", "SPLG", "IJH", "IJR", "VT", "QQQ", "SCHD"]
+_should_be_single = ["AAPL", "NVDA", "TSLA", "RELIANCE.NS"]
+check("fix#1: broad ETFs (incl. QQQM) classify as diversified",
+      all(spe.is_diversified(t) for t in _should_be_div),
+      f"misclassified: {[t for t in _should_be_div if not spe.is_diversified(t)]}")
+check("fix#1: single names classify as single (weak prior)",
+      all(not spe.is_diversified(t) for t in _should_be_single),
+      f"misclassified: {[t for t in _should_be_single if spe.is_diversified(t)]}")
+check("fix#1: --prior override forces classification both ways",
+      spe.is_diversified("NVDA", "diversified") is True
+      and spe.is_diversified("VOO", "single") is False)
+
+# 21) (#2) Thin-history fires when total history < 2x max horizon (e.g. 5.7y vs 5y),
+#     and stays silent for long histories. max horizon here = max(HORIZONS_YEARS).
+_mh = max(spe.HORIZONS_YEARS)
+check("fix#2: thin-history warning fires on short history (5.7y vs 5y horizon)",
+      spe.thin_history_warning(5.7, _mh) is not None
+      and "THIN HISTORY" in spe.thin_history_warning(5.7, _mh))
+check("fix#2: thin-history warning silent on long history (25y)",
+      spe.thin_history_warning(25.0, _mh) is None)
+
+# 22) (#3+#4) Thin-overlap fires when common overlap << longest single-asset history,
+#     naming the limiting asset; silent when overlaps are comparable.
+_nat = {"NVDA": 27.4, "VTI": 25.0, "QQQM": 5.7}
+_ov = spe.thin_overlap_warning(5.7, _nat)
+check("fix#3: thin-overlap fires on truncated portfolio and names limiter",
+      _ov is not None and "THIN OVERLAP" in _ov and "QQQM" in _ov and "EXCLUDED" in _ov,
+      _ov or "no warning")
+check("fix#3: thin-overlap silent when histories are comparable",
+      spe.thin_overlap_warning(24.0, {"VTI": 25.0, "VOO": 24.5}) is None)
+
+# 23) (degenerate blend) fires when history < largest finite BLEND window; silent otherwise.
+_largest_blend = max(y for y in spe.BLEND if y is not None)
+check("fix: degenerate-blend warning fires on short history",
+      spe.degenerate_blend_warning(5.7) is not None
+      and "DEGENERATE" in spe.degenerate_blend_warning(5.7),
+      f"largest finite blend window = {_largest_blend}y")
+check("fix: degenerate-blend warning silent on long history",
+      spe.degenerate_blend_warning(25.0) is None)
+
 spe.AMOUNT = 10_000.0   # restore
 
 # ---- report ----------------------------------------------------------

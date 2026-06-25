@@ -289,6 +289,12 @@ The bootstrap produces internally consistent probabilities (validated by 23 inva
 
 5. **Small calibration sample.** ~33 years of US equity data gives only ~28 independent 1-year windows and ~6 independent 5-year windows. This fundamentally limits how precisely any model can be validated at long horizons.
 
+6. **Short-history assets and truncated overlaps.** A fund with only a few years of data (e.g. a recently launched ETF) projected over a 5-year horizon rests on too few independent periods. In a multi-asset portfolio, the common date overlap is capped by the *shortest* component, which can silently exclude major bear markets (2008, dot-com). The tool now fires explicit `THIN HISTORY`, `THIN OVERLAP`, and `BLEND DEGENERATE` warnings in these cases — read them; the headline numbers in a crash-free window are optimistic.
+
+### Classification (diversified fund vs single name)
+
+The "weaker prior: single stock" warning depends on classifying a ticker as a diversified fund or an individual company. This is currently a **maintained membership set** (`DIVERSIFIED` in `stock_probability_engine.py`) — a fallback that will always lag newly launched ETFs. Use `--prior diversified|single` to override the guess for any ticker. **Recommended next step:** read Yahoo Finance's `quoteType` field (`ETF`/`MUTUALFUND` vs `EQUITY`) at fetch time and fall back to the static set only when offline; that removes the maintenance burden entirely.
+
 ---
 
 ## Project Structure

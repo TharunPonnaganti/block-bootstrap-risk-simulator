@@ -35,11 +35,27 @@ CSV_PATH        = None        # e.g. r"C:\Users\you\Downloads\VTI.csv" to use yo
 
 # Recognized broad/diversified funds: a single one of these is a legitimate prior.
 # Any OTHER single ticker is treated as a single stock and earns a WEAKER-PRIOR caveat.
+# Membership set of tickers treated as a "diversified fund" prior (sound bootstrap)
+# rather than a single name (weak, idiosyncratic prior).
+#
+# DESIGN NOTE: a hand-maintained set is a FALLBACK, not the ideal classifier -- it
+# will always lag new ETFs (this set previously missed QQQM, SPLG, IJH, etc.). The
+# robust design is to read Yahoo's `quoteType` field ("ETF"/"MUTUALFUND" => diversified,
+# "EQUITY" => single name) at fetch time and fall back to this set only when offline.
+# That is the recommended next step; see README "Classification" section. Until then,
+# `--prior diversified|single` lets the user override the guess explicitly.
 DIVERSIFIED = {
-    # US
-    "VTI", "VOO", "SPY", "IVV", "ITOT", "SCHB", "SCHX", "QQQ", "DIA", "IWM",
-    "VXUS", "VEU", "VEA", "VWO", "VT", "ACWI", "BND", "AGG", "BNDX",
-    "VTV", "VUG", "VYM", "SCHD", "VIG", "RSP",
+    # US broad market / total market
+    "VTI", "VOO", "SPY", "IVV", "ITOT", "SCHB", "SCHX", "SPLG", "VV", "MGC",
+    # US style / cap tilts
+    "QQQ", "QQQM", "DIA", "IWM", "IJH", "IJR", "VO", "VB", "MDY", "SCHM", "SCHA",
+    "VTV", "VUG", "VYM", "SCHD", "VIG", "RSP", "SCHG", "SCHV", "MGK",
+    "VOOG", "VOOV", "IVW", "IVE", "VTWO", "VONE",
+    # International / global
+    "VXUS", "VEU", "VEA", "VWO", "VT", "ACWI", "IEFA", "IEMG", "EFA", "EEM",
+    "SCHF", "VGK", "VPL", "IXUS",
+    # Bonds
+    "BND", "AGG", "BNDX", "BIV", "BSV", "TLT", "IEF", "SHY",
     # India (NSE)
     "NIFTYBEES.NS", "JUNIORBEES.NS", "BANKBEES.NS", "SETFNIF50.NS",
     "CPSEETF.NS", "NIF100BEES.NS", "MOM100.NS",
@@ -216,12 +232,16 @@ def fetch_portfolio(weights, history_years=None):
     """Fetch each component, INNER-JOIN on common trading dates, and return the
     date-aligned SIMPLE-return matrix plus a normalized weight vector. Aligning on
     shared dates is what lets the joint bootstrap preserve cross-asset correlation.
-    Returns (rdates, R_simple [n_obs x n_assets], weights_vec, tickers, source)."""
+    Returns (rdates, R_simple [n_obs x n_assets], weights_vec, tickers, source,
+    native_years) where native_years maps each ticker to the span of its OWN history
+    (pre-join), so callers can warn when the common overlap is much shorter."""
     tickers = list(weights.keys())
     series = {}
+    native_years = {}
     for t in tickers:
         d, p, _ = fetch_yahoo(t, history_years)
         series[t] = dict(zip(d, p))
+        native_years[t] = (d[-1] - d[0]).days / 365.25 if len(d) > 1 else 0.0
     common = sorted(set.intersection(*[set(series[t]) for t in tickers]))
     if len(common) < 60:
         raise RuntimeError(f"Only {len(common)} overlapping dates across {tickers}; need >= 60.")
@@ -232,7 +252,7 @@ def fetch_portfolio(weights, history_years=None):
     w = w / w.sum()
     src = "Yahoo daily adj-close | portfolio " + ", ".join(
         f"{t} {wi*100:.0f}%" for t, wi in zip(tickers, w))
-    return rdates, R, w, tickers, src
+    return rdates, R, w, tickers, src, native_years
 
 
 # ----------------------------------------------------------------------
@@ -241,6 +261,70 @@ def fetch_portfolio(weights, history_years=None):
 def historical_max_drawdown(prices):
     runmax = np.maximum.accumulate(prices)
     return float((prices / runmax - 1.0).min())
+
+
+# ----------------------------------------------------------------------
+# Prior classification + history-quality rules (pure -> unit-testable)
+# ----------------------------------------------------------------------
+def is_diversified(ticker, override="auto"):
+    """True if the ticker should get a diversified-fund prior (sound) rather than a
+    single-name prior (weak). `override` of 'diversified'/'single' forces the call;
+    'auto' (default) uses the DIVERSIFIED membership set.
+
+    Membership is a maintained FALLBACK -- the robust classifier is Yahoo's quoteType
+    (see the DESIGN NOTE on DIVERSIFIED). Kept as a pure function so it is testable."""
+    if override == "diversified":
+        return True
+    if override == "single":
+        return False
+    return bool(ticker) and ticker.upper() in DIVERSIFIED
+
+
+def thin_history_warning(n_years_hist, max_horizon):
+    """Fire when total available history is short relative to the longest horizon.
+    Rule: history < 2x max horizon. This catches short-history assets (e.g. a 5.7y
+    ETF projected 5y) that the old `active-window < 3y` check missed in blend mode,
+    because the blend's recent window is a fixed config value, not the real data span."""
+    if n_years_hist < 2 * max_horizon:
+        return (f"THIN HISTORY (~{n_years_hist:.1f} yrs total vs {max_horizon}y max horizon): "
+                f"under 2x the longest horizon, so long-horizon ranges rest on few independent "
+                f"periods and likely miss major regimes.")
+    return None
+
+
+def thin_overlap_warning(overlap_years, native_years):
+    """Fire when a portfolio's common date overlap is materially shorter than its
+    longest-history component. `native_years` maps ticker -> that asset's OWN history
+    span (pre-join). Rule: overlap < 0.75x the longest single-asset history. Names the
+    limiting asset and states that crash regimes in the longer histories are excluded."""
+    if not native_years:
+        return None
+    longest_t = max(native_years, key=native_years.get)
+    longest = native_years[longest_t]
+    shortest_t = min(native_years, key=native_years.get)
+    if longest > 0 and overlap_years < 0.75 * longest:
+        return (f"THIN OVERLAP: common history is ~{overlap_years:.1f} yrs, but {longest_t} alone "
+                f"has ~{longest:.1f} yrs. {shortest_t} limits the overlap. Crash regimes present in "
+                f"the longer histories (e.g. 2008, dot-com) are EXCLUDED from this simulation.")
+    return None
+
+
+def degenerate_blend_warning(n_years_hist, blend=None):
+    """Fire when history is too short for the configured eras to be distinct -- i.e. the
+    largest finite blend window and the full window resolve to the same data, so era
+    blending adds no regime diversification. Rule: total history < largest finite BLEND
+    key. Used to suppress the (misleading) BLEND-mitigates-bias reassurance in that case."""
+    blend = BLEND if blend is None else blend
+    finite = [y for y in blend if y is not None]
+    if not finite:
+        return None
+    largest = max(finite)
+    if n_years_hist < largest:
+        return (f"BLEND DEGENERATE: ~{n_years_hist:.1f} yrs of history can't span the configured "
+                f"eras (the {largest}y and full windows resolve to nearly the same data). "
+                f"Era-blending adds no regime diversification here; treat as a single "
+                f"~{n_years_hist:.1f}y window.")
+    return None
 
 
 def detect_frequency(dates):
@@ -513,6 +597,9 @@ def parse_args():
     p.add_argument("--paths", type=int, default=N_PATHS, help="number of bootstrap paths")
     p.add_argument("--haircut", type=float, default=DRIFT_HAIRCUT,
                    help="fraction of historical drift to remove, 0-1 (stress test)")
+    p.add_argument("--prior", choices=["auto", "diversified", "single"], default="auto",
+                   help="override the diversified-vs-single-name classification "
+                        "(auto = use the built-in fund set)")
     p.add_argument("--dca", type=float, default=None,
                    help="monthly recurring contribution (SIP/DCA) -- shows side-by-side with lump sum")
     p.add_argument("--dca-start", choices=["begin", "end"], default="begin",
@@ -542,7 +629,7 @@ def compute(args):
     if portfolio:
         # -------- multi-asset: correlation-preserving joint bootstrap ----
         weights_map = parse_weights(portfolio)
-        rdates, R, w, tickers, source = fetch_portfolio(weights_map, None)
+        rdates, R, w, tickers, source, native_years = fetch_portfolio(weights_map, None)
         ppy, block = detect_frequency(rdates)
         port_simple = R @ w
         port_price = np.concatenate([[1.0], np.cumprod(1.0 + port_simple)])
@@ -556,10 +643,21 @@ def compute(args):
         for i, t in enumerate(tickers):
             d, v = annualize(np.log1p(R[:, i]), ppy)
             comp.append({"label": t, "years": None, "obs": obs, "weight": float(w[i]), "drift": d, "vol": v})
+        max_h = max(HORIZONS_YEARS)
         warnings = [f"DIVERSIFIED PORTFOLIO ({len(tickers)} assets): bootstrap prior is statistically "
                     "appropriate; cross-asset correlation preserved by joint resampling."]
+        # (#3 + #4 merged) overlap materially shorter than the longest-history component:
+        # names the limiting asset and states crash regimes are excluded.
+        w_overlap = thin_overlap_warning(n_years_hist, native_years)
+        if w_overlap:
+            warnings.append(w_overlap)
+        # absolute floor (kept) + horizon-relative thin-history check.
         if n_years_hist < 3:
             warnings.append(f"THIN OVERLAP (~{n_years_hist:.1f} yrs common history): ranges unreliable.")
+        else:
+            w_thin = thin_history_warning(n_years_hist, max_h)
+            if w_thin:
+                warnings.append(w_thin)
         if hist_mdd > -0.25:
             warnings.append(f"NO REAL DRAWDOWN in overlap (worst {hist_mdd*100:.0f}%): likely all-bull; downside understated.")
 
@@ -599,21 +697,36 @@ def compute(args):
         warn_ret = slice_window(dates, log_ret, recent_years)[1] if recent_years is not None else log_ret
         warn_drift = annualize(warn_ret, ppy)[0]
         warn_years = recent_years if recent_years is not None else n_years_hist
+        max_h = max(HORIZONS_YEARS)
+        prior_override = getattr(args, "prior", "auto")
         warnings = []
-        if (not args.csv) and args.ticker.upper() not in DIVERSIFIED:
+        # (#1) classification via is_diversified() -- expanded set + explicit override.
+        if (not args.csv) and not is_diversified(args.ticker, prior_override):
             warnings.append("WEAKER PRIOR: single stock -- a one-name bootstrap is idiosyncratic "
                             "(earnings/fraud/obsolescence it can't foresee). Prefer a diversified "
                             "index or --portfolio as the primary analysis.")
         elif args.csv:
             warnings.append("CSV input: if this is a single company (not a diversified fund), treat the prior as weak.")
+        # active-window floor (kept): catches an explicitly short --years window.
         if warn_years < 3:
             warnings.append(f"THIN HISTORY (~{warn_years:.1f} yrs active): too few real regimes; ranges unreliable.")
+        # (#2) total history short relative to the longest horizon -- fires even in blend
+        # mode, where warn_years reflects the fixed config window, not the real data span.
+        w_thin = thin_history_warning(n_years_hist, max_h)
+        if w_thin:
+            warnings.append(w_thin)
         if hist_mdd > -0.25:
             warnings.append(f"NO REAL DRAWDOWN in history (worst {hist_mdd*100:.0f}%): likely all-bull; downside understated.")
         if warn_drift > 0.30:
             warnings.append(f"VERY HIGH drift ({warn_drift*100:.0f}%/yr) in the active window: extrapolates a boom; try --haircut.")
+        # (degenerate blend) only give the BLEND-mitigates-bias reassurance when the
+        # history actually spans the eras; otherwise warn that blending is a no-op here.
         if args.blend:
-            warnings.append("BLEND active: recent-era weighting is balanced against older crash regimes (mitigates all-bull bias).")
+            w_degen = degenerate_blend_warning(n_years_hist)
+            if w_degen:
+                warnings.append(w_degen)
+            else:
+                warnings.append("BLEND active: recent-era weighting is balanced against older crash regimes (mitigates all-bull bias).")
 
         def simulate(n_periods):
             return bootstrap_blended(windows, weights, n_periods, args.paths, block, rng, args.haircut, amount=amt)

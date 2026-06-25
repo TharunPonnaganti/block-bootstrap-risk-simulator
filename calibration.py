@@ -81,7 +81,7 @@ def load_series(ticker=None, portfolio=None, history_years=None):
     portfolio return series is built so calibration runs on one series."""
     if portfolio:
         weights = spe.parse_weights(portfolio)
-        rdates, R, w, tickers, source = spe.fetch_portfolio(weights, history_years)
+        rdates, R, w, tickers, source, _native = spe.fetch_portfolio(weights, history_years)
         log_ret = np.log1p(R @ w)                       # rebalanced portfolio log-returns
         ppy, block = spe.detect_frequency(rdates)
         return log_ret, ppy, block, source
