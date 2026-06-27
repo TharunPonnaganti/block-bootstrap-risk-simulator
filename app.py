@@ -13,6 +13,7 @@ import altair as alt
 import streamlit as st
 
 import stock_probability_engine as spe
+import portfolio_construction as pc
 
 st.set_page_config(page_title="Stock Probability Engine", page_icon="📈", layout="wide")
 
@@ -43,8 +44,98 @@ def run_engine(ticker, csv_bytes, years, blend, amount, paths, haircut, portfoli
     return spe.compute(args)
 
 
+@st.cache_data(show_spinner="Running candidate allocation lab...")
+def run_construction_lab(portfolio, amount, paths, cash_rate):
+    weights = spe.parse_weights(portfolio)
+    rdates, R, w, tickers, source, native_years = spe.fetch_portfolio(weights, None)
+    lab_paths = max(300, min(int(paths), 1200))
+    rows = pc.evaluate_candidates(
+        R,
+        candidates=["equal_weight", "inverse_vol", "risk_parity", "min_cvar", "mean_variance"],
+        years=5,
+        n_paths=lab_paths,
+        block=21,
+        amount=float(amount),
+        cash_rate=float(cash_rate),
+        stability_resamples=2,
+        seed=101,
+    )
+    split = pc.evaluate_train_eval_split(
+        R,
+        train_frac=0.70,
+        candidates=["equal_weight", "inverse_vol", "risk_parity", "min_cvar", "mean_variance"],
+        years=1,
+        n_paths=max(200, min(int(paths), 700)),
+        block=21,
+        amount=float(amount),
+        cash_rate=float(cash_rate),
+        stability_resamples=1,
+        seed=202,
+    )
+    frontier = pc.resampled_efficient_frontier(
+        R,
+        risk_aversions=(2.0, 5.0, 10.0, 20.0),
+        n_resamples=6,
+        block=21,
+        seed=303,
+    )
+    return {"tickers": tickers, "rows": rows, "split": split, "frontier": frontier}
+
+
 def above_threshold(p_profit, threshold):
     return p_profit >= threshold
+
+
+def weights_label(weights, tickers):
+    return ", ".join(f"{t} {w*100:.0f}%" for t, w in zip(tickers, weights))
+
+
+def candidate_table(rows, tickers, cs):
+    return pd.DataFrame([{
+        "Candidate": r["label"],
+        "Weights": weights_label(r["weights"], tickers),
+        "P(profit)": f"{r['P(profit)']*100:.1f}%",
+        "P(beat cash)": f"{r['P(beat cash)']*100:.1f}%",
+        "P10": fmt(r["val_P10"], cs),
+        "Median": fmt(r["val_P50"], cs),
+        "CVaR": f"{r['cvar_ret']*100:+.1f}%",
+        "Bad-case DD": f"{r['maxdd_p95worst']*100:.1f}%",
+        "Eff. bets": f"{r['effective_bets']:.2f}",
+        "Weight stability": f"avg {r.get('weight_std_mean', 0)*100:.1f}% / max {r.get('weight_std_max', 0)*100:.1f}%",
+    } for r in rows])
+
+
+def lab_column_config():
+    """Per-column hover tooltips for the candidate-allocation tables."""
+    return {
+        "Candidate": st.column_config.TextColumn("Candidate", help=(
+            "The allocation method. equal_weight = 1/N; inverse_vol = weight proportional to "
+            "1/volatility; risk_parity = full equal-risk-contribution (each asset adds the same "
+            "risk); min_cvar = minimizes the worst-5% tail loss (exact LP with SciPy, else a "
+            "near-optimal NumPy fallback); mean_variance = classic return-vs-variance baseline. "
+            "'(in-sample)' means the weights were fit and graded on the same history.")),
+        "Weights": st.column_config.TextColumn("Weights", help="The candidate's allocation across your tickers."),
+        "P(profit)": st.column_config.TextColumn("P(profit)", help=(
+            "Share of bootstrap futures ending above the amount invested. Uncalibrated for "
+            "constructed portfolios -- read as a risk indicator, not a forecast.")),
+        "P(beat cash)": st.column_config.TextColumn("P(beat cash)", help=(
+            "Share of futures ending above a risk-free cash benchmark compounded over the horizon.")),
+        "P10": st.column_config.TextColumn("P10", help=(
+            "Pessimistic outcome: 10th-percentile ending value (90% of paths end above this).")),
+        "Median": st.column_config.TextColumn("Median", help=(
+            "50th-percentile ending value -- half of simulated paths land above, half below.")),
+        "CVaR": st.column_config.TextColumn("CVaR", help=(
+            "Conditional Value at Risk (Expected Shortfall): average return across the worst 5% "
+            "of outcomes. More negative = a fatter, more painful tail.")),
+        "Bad-case DD": st.column_config.TextColumn("Bad-case DD", help=(
+            "Bad-case maximum drawdown: the deepest peak-to-trough fall at the 5%-worst path.")),
+        "Eff. bets": st.column_config.TextColumn("Eff. bets", help=(
+            "Effective number of independent bets = 1 / HHI concentration. Near the asset count "
+            "= well diversified; near 1 = concentrated in a single holding.")),
+        "Weight stability": st.column_config.TextColumn("Weight stability", help=(
+            "How much the fitted weights move when refit on bootstrap resamples (average / max "
+            "standard deviation). Higher = the optimizer is fragile/unstable on this history.")),
+    }
 
 
 # ----------------------------------------------------------------------
@@ -94,10 +185,14 @@ INDIA_TICKERS = [
 # ----------------------------------------------------------------------
 st.sidebar.title("Inputs")
 
-market = st.sidebar.radio("Market", ["US", "India"], index=0, horizontal=True)
+market = st.sidebar.radio("Market", ["US", "India"], index=0, horizontal=True,
+                          help="Sets the currency and risk-free cash rate. US uses $ and ~4%; "
+                               "India uses Rs and ~6.5%, and accepts .NS (NSE) / .BO (BSE) tickers.")
 
 data_mode = st.sidebar.radio(
-    "Data", ["Single ticker (fund or stock)", "Portfolio (multi-asset)", "Upload CSV"], index=0)
+    "Data", ["Single ticker (fund or stock)", "Portfolio (multi-asset)", "Upload CSV"], index=0,
+    help="Single ticker = one fund or stock. Portfolio = a multi-asset mix (unlocks the candidate "
+         "allocation lab). Upload CSV = use your own date + price export instead of Yahoo.")
 ticker, csv_bytes, portfolio = None, None, None
 
 if data_mode == "Single ticker (fund or stock)":
@@ -108,7 +203,9 @@ if data_mode == "Single ticker (fund or stock)":
              "run too, but earn a weaker-prior caveat. Pick 'Other' to type any symbol.")
     if pick.startswith("Other"):
         default_ticker = "VTI" if market == "US" else "NIFTYBEES.NS"
-        ticker = st.sidebar.text_input("Custom ticker", default_ticker).strip().upper()
+        ticker = st.sidebar.text_input(
+            "Custom ticker", default_ticker,
+            help="Any Yahoo Finance symbol. Append .NS for NSE India or .BO for BSE India.").strip().upper()
     elif pick.startswith("---"):
         st.sidebar.info("Pick a ticker below the section header.")
         st.stop()
@@ -121,7 +218,10 @@ elif data_mode == "Portfolio (multi-asset)":
         help="Weights are normalized. Components are date-aligned and resampled JOINTLY, "
              "so cross-asset correlation is preserved.").strip()
 else:
-    up = st.sidebar.file_uploader("CSV with a date + close/adj-close column", type=["csv"])
+    up = st.sidebar.file_uploader(
+        "CSV with a date + close/adj-close column", type=["csv"],
+        help="A brokerage export with a date column and a close/adj-close (or price/NAV) column. "
+             "Columns are auto-detected. Treat a single company's CSV as a weak prior.")
     if up is not None:
         csv_bytes = up.getvalue()
 
@@ -146,18 +246,27 @@ else:
         blend = True
         st.sidebar.caption(f"Blend weights: {spe.BLEND}")
     elif window_mode == "Last N years":
-        years = st.sidebar.slider("Years of history", 1, 30, 15)
+        years = st.sidebar.slider("Years of history", 1, 30, 15,
+                              help="Cap the lookback to the last N years. Fewer years = more "
+                                   "recent regime but fewer real crashes in the sample.")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Lump Sum")
 amount = st.sidebar.number_input(
-    f"Invest amount ({cur_sym})", 100, 100_000_000, default_amount, step=amount_step)
+    f"Invest amount ({cur_sym})", 100, 100_000_000, default_amount, step=amount_step,
+    help="Hypothetical one-time lump sum invested today. P(profit) is scale-free, but the "
+         "percentile ending values scale with this amount.")
 
 st.sidebar.subheader("Monthly Recurring (SIP / DCA)")
-enable_dca = st.sidebar.checkbox("Enable monthly recurring", value=True)
+enable_dca = st.sidebar.checkbox(
+    "Enable monthly recurring", value=True,
+    help="Also simulate a monthly contribution (SIP/DCA) on the SAME market scenarios as the "
+         "lump sum, so the comparison isolates cash-flow timing.")
 if enable_dca:
     dca_amount = st.sidebar.number_input(
-        f"Monthly contribution ({cur_sym})", 100, 10_000_000, default_dca, step=dca_step)
+        f"Monthly contribution ({cur_sym})", 100, 10_000_000, default_dca, step=dca_step,
+        help="Amount contributed at the start of each month over the horizon. Total invested "
+             "grows with each contribution; P(profit) compares the ending value to that total.")
 else:
     dca_amount = None
 
@@ -237,6 +346,63 @@ if res["mode"] == "blended" or len(res["windows"]) > 1 or res["windows"][0]["yea
 
 for w in res["warnings"]:
     (st.warning if not w.startswith("BLEND") else st.info)(w)
+
+if data_mode == "Portfolio (multi-asset)" and portfolio:
+    st.markdown("---")
+    st.subheader("Candidate allocation lab")
+    st.caption("Objective-driven candidate allocations, not recommendations. Weights are fit on historical returns, "
+               "then graded by the same block-bootstrap engine used above. Rows marked in-sample are fit and "
+               "evaluated on the same return history; the train/eval table below shows a chronological split.")
+    try:
+        lab = run_construction_lab(portfolio, amount, paths, p["cash_rate"])
+        lab_rows = lab["rows"]
+        tickers_lab = lab["tickers"]
+        st.dataframe(candidate_table(lab_rows, tickers_lab, cs), width="stretch",
+                     hide_index=True, column_config=lab_column_config())
+        st.caption("Hover the ? on any column header for what it means.")
+
+        with st.expander("What each candidate method and metric means"):
+            st.markdown(
+                "**Allocation methods (each one *proposes* weights; the bootstrap then grades them):**\n"
+                "- **equal_weight** -- 1/N across all assets. The naive baseline.\n"
+                "- **inverse_vol** -- weight proportional to 1/volatility; calmer assets get more.\n"
+                "- **risk_parity** -- full equal-risk-contribution: each asset adds the *same* risk "
+                "to the portfolio (not the same capital).\n"
+                "- **min_cvar** -- minimizes the worst-5% tail loss (CVaR). Exact Rockafellar-Uryasev "
+                "LP if SciPy is installed, otherwise a near-optimal NumPy fallback.\n"
+                "- **mean_variance** -- the classic return-vs-variance baseline (long-only).\n\n"
+                "**Fragility / quality columns:**\n"
+                "- **Eff. bets** -- effective number of independent bets (1/HHI). Near the asset "
+                "count = diversified; near 1 = concentrated.\n"
+                "- **Weight stability** -- how much the weights move when refit on resampled history. "
+                "High = the optimizer is unstable and you shouldn't trust its exact weights.\n\n"
+                "Rows marked **(in-sample)** are fit and graded on the same history -- optimistic by "
+                "construction. The split table below grades them out-of-sample."
+            )
+
+        with st.expander("Out-of-sample split check", expanded=False):
+            split = lab["split"]
+            st.caption(f"Weights fit on the first {split['train_obs']:,} observations and evaluated on the "
+                       f"last {split['eval_obs']:,}. This proves the lab *can* grade candidates out-of-sample; "
+                       f"it is not a powered study proving any method beats the baseline.")
+            st.dataframe(candidate_table(split["rows"], tickers_lab, cs), width="stretch",
+                         hide_index=True, column_config=lab_column_config())
+
+        with st.expander("Resampled mean-variance frontier cloud", expanded=False):
+            fdf = pd.DataFrame(lab["frontier"])
+            fdf["ann_return_pct"] = fdf["ann_return"] * 100.0
+            fdf["ann_vol_pct"] = fdf["ann_vol"] * 100.0
+            chart = alt.Chart(fdf).mark_circle(size=70, opacity=0.65).encode(
+                x=alt.X("ann_vol_pct:Q", title="Annualized volatility (%)"),
+                y=alt.Y("ann_return_pct:Q", title="Annualized mean return (%)"),
+                color=alt.Color("risk_aversion:N", title="Risk aversion"),
+                tooltip=["risk_aversion:N", "ann_return_pct:Q", "ann_vol_pct:Q", "weight_std_mean:Q"],
+            ).properties(height=300)
+            st.altair_chart(chart.interactive(), width="stretch")
+            st.caption("Each point refits the mean-variance baseline on a bootstrap resample. "
+                       "A wide cloud means the classic optimizer is unstable on the available history.")
+    except Exception as e:
+        st.warning(f"Could not run the candidate allocation lab: {e}")
 
 st.markdown("---")
 

@@ -1,0 +1,6 @@
+# Optional optimizer dependency.
+# Enables exact Rockafellar-Uryasev Min-CVaR LP via scipy.optimize.linprog.
+# Without this file, portfolio_construction.py uses a pure-NumPy projected
+# subgradient fallback for Min-CVaR.
+
+scipy>=1.11

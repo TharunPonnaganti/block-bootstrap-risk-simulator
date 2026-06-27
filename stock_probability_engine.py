@@ -430,11 +430,12 @@ def bootstrap_portfolio(returns_matrix, weights_vec, n_periods, n_paths, block, 
     return np.concatenate([np.full((n_paths, 1), amt), paths], axis=1)
 
 
-def analyze(value_paths, years, amount=None, cash_rate=None):
+def analyze(value_paths, years, amount=None, cash_rate=None, var_conf=None):
     """Compute risk metrics from simulated value paths. Uses explicit amount/cash_rate
     when provided; falls back to module globals for backward compatibility."""
     amt = AMOUNT if amount is None else amount
     cr = CASH_RATE if cash_rate is None else cash_rate
+    vc = VAR_CONF if var_conf is None else var_conf
     terminal = value_paths[:, -1]
     ret = terminal / amt - 1.0
     cagr = (terminal / amt) ** (1.0 / years) - 1.0
@@ -442,7 +443,7 @@ def analyze(value_paths, years, amount=None, cash_rate=None):
     runmax = np.maximum.accumulate(value_paths, axis=1)
     maxdd = (value_paths / runmax - 1.0).min(axis=1)
 
-    tail_p = (1.0 - VAR_CONF) * 100.0
+    tail_p = (1.0 - vc) * 100.0
     var_ret = np.percentile(ret, tail_p)
     cvar_ret = ret[ret <= var_ret].mean()
     cash_factor = (1.0 + cr) ** years
