@@ -1,5 +1,5 @@
 """
-Streamlit dashboard for the block-bootstrap risk simulator.
+Streamlit dashboard for the portfolio risk and construction lab.
 
 Runs locally -- nothing leaves your machine except the Yahoo price fetch.
 Start with: streamlit run app.py
@@ -15,7 +15,7 @@ import streamlit as st
 import stock_probability_engine as spe
 import portfolio_construction as pc
 
-st.set_page_config(page_title="Stock Probability Engine", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Portfolio Risk & Construction Lab", page_icon="📈", layout="wide")
 
 
 # ----------------------------------------------------------------------
@@ -88,6 +88,20 @@ def above_threshold(p_profit, threshold):
 
 def weights_label(weights, tickers):
     return ", ".join(f"{t} {w*100:.0f}%" for t, w in zip(tickers, weights))
+
+
+def weight_pct_label(weight):
+    pct = weight * 100.0
+    if abs(pct - round(pct)) < 0.05:
+        return f"{pct:.0f}%"
+    return f"{pct:.1f}%"
+
+
+def normalized_weight_preview(portfolio_spec):
+    weights = spe.parse_weights(portfolio_spec)
+    total = sum(weights.values())
+    return ", ".join(f"{ticker} {weight_pct_label(weight / total)}"
+                     for ticker, weight in weights.items())
 
 
 def candidate_table(rows, tickers, cs):
@@ -180,50 +194,105 @@ INDIA_TICKERS = [
 ]
 
 
+def split_ticker_options(ticker_list):
+    groups = {"Diversified funds / ETFs": [], "Individual stocks": []}
+    active_group = "Diversified funds / ETFs"
+    for item in ticker_list:
+        if item.startswith("---"):
+            label = item.lower()
+            active_group = (
+                "Individual stocks"
+                if "individual" in label or "large-cap" in label
+                else "Diversified funds / ETFs"
+            )
+            continue
+        if item.startswith("Other"):
+            continue
+        symbol, _, name = item.partition(" -- ")
+        symbol = symbol.strip().upper()
+        display = f"{symbol} - {name.strip()}" if name else symbol
+        groups[active_group].append((symbol, display))
+    return groups
+
+
+def extract_symbol(label):
+    """Pull the ticker symbol from a 'SYMBOL - name' option label, or return a
+    free-typed custom entry as-is. Handles ' - ', ' -- ', and ' -- ' separators."""
+    if not label:
+        return ""
+    text = str(label)
+    for sep in (" -- ", " — ", " - "):
+        if sep in text:
+            text = text.split(sep, 1)[0]
+            break
+    return text.strip().upper()
+
+
 # ----------------------------------------------------------------------
 # Sidebar -- inputs
 # ----------------------------------------------------------------------
-st.sidebar.title("Inputs")
+st.sidebar.title("Setup")
+st.sidebar.subheader("1. Market & data")
 
 market = st.sidebar.radio("Market", ["US", "India"], index=0, horizontal=True,
                           help="Sets the currency and risk-free cash rate. US uses $ and ~4%; "
                                "India uses Rs and ~6.5%, and accepts .NS (NSE) / .BO (BSE) tickers.")
 
 data_mode = st.sidebar.radio(
-    "Data", ["Single ticker (fund or stock)", "Portfolio (multi-asset)", "Upload CSV"], index=0,
-    help="Single ticker = one fund or stock. Portfolio = a multi-asset mix (unlocks the candidate "
-         "allocation lab). Upload CSV = use your own date + price export instead of Yahoo.")
+    "Analyze",
+    ["One ticker", "A portfolio", "My CSV"],
+    index=0,
+    help="One ticker = a single fund, ETF, or stock. A portfolio = several assets with weights "
+         "(and unlocks the candidate allocation lab). My CSV = your own date + price history.")
 ticker, csv_bytes, portfolio = None, None, None
 
-if data_mode == "Single ticker (fund or stock)":
-    ticker_list = US_TICKERS if market == "US" else INDIA_TICKERS
+if data_mode == "One ticker":
+    groups = split_ticker_options(US_TICKERS if market == "US" else INDIA_TICKERS)
+    fund_opts = [disp for _s, disp in groups["Diversified funds / ETFs"]]   # sound prior, shown first
+    stock_opts = [disp for _s, disp in groups["Individual stocks"]]
+    options = fund_opts + stock_opts
     pick = st.sidebar.selectbox(
-        "Ticker", ticker_list, index=1,
-        help="Diversified funds/ETFs (top) are the statistically sound use. Individual companies "
-             "run too, but earn a weaker-prior caveat. Pick 'Other' to type any symbol.")
-    if pick.startswith("Other"):
-        default_ticker = "VTI" if market == "US" else "NIFTYBEES.NS"
-        ticker = st.sidebar.text_input(
-            "Custom ticker", default_ticker,
-            help="Any Yahoo Finance symbol. Append .NS for NSE India or .BO for BSE India.").strip().upper()
-    elif pick.startswith("---"):
-        st.sidebar.info("Pick a ticker below the section header.")
-        st.stop()
+        "Ticker", options, index=None, accept_new_options=True,
+        placeholder="🔍 Search funds & stocks, or type any symbol…",
+        help="Type to search the curated funds and stocks, or type ANY Yahoo Finance symbol to "
+             "add it -- append .NS for NSE India or .BO for BSE India. Funds/ETFs are the "
+             "soundest prior; single stocks and brand-new listings carry a weaker-prior / "
+             "THIN HISTORY caveat.")
+    ticker = extract_symbol(pick)
+    if ticker:
+        if spe.is_diversified(ticker):
+            st.sidebar.caption(f"Analyzing **{ticker}** -- diversified fund (sound prior).")
+        else:
+            st.sidebar.caption(f"Analyzing **{ticker}** -- single stock or custom symbol "
+                               "(weaker prior; new listings may hit a THIN HISTORY warning).")
     else:
-        ticker = pick.split(" ")[0].strip().upper()
-elif data_mode == "Portfolio (multi-asset)":
+        st.sidebar.caption("Examples: VTI, SPY, QQQ, AAPL, SPCX, RELIANCE.NS")
+    st.sidebar.caption("Tip: switch Analyze to A portfolio to compare risk parity, Min-CVaR, "
+                       "mean-variance, and optimizer stability.")
+elif data_mode == "A portfolio":
     default_portfolio = "VTI:0.8, QQQ:0.2" if market == "US" else "NIFTYBEES.NS:0.6, HDFCBANK.NS:0.2, TCS.NS:0.2"
-    portfolio = st.sidebar.text_input(
-        "Allocation", default_portfolio,
-        help="Weights are normalized. Components are date-aligned and resampled JOINTLY, "
-             "so cross-asset correlation is preserved.").strip()
+    portfolio_text = st.sidebar.text_area(
+        "Portfolio weights", default_portfolio, height=72,
+        placeholder="VTI:0.8, QQQ:0.2",
+        help="Use ticker:weight pairs separated by commas or new lines. Weights are normalized. "
+             "Components are date-aligned and resampled JOINTLY, so cross-asset correlation is preserved.")
+    portfolio = portfolio_text.replace("\n", ",").strip()
+    portfolio_parse_error = None
+    try:
+        st.sidebar.success(f"Normalized: {normalized_weight_preview(portfolio)}")
+    except Exception as e:
+        portfolio_parse_error = str(e)
+        st.sidebar.warning(f"Fix portfolio weights: {portfolio_parse_error}")
 else:
     up = st.sidebar.file_uploader(
-        "CSV with a date + close/adj-close column", type=["csv"],
+        "Upload price CSV", type=["csv"],
         help="A brokerage export with a date column and a close/adj-close (or price/NAV) column. "
              "Columns are auto-detected. Treat a single company's CSV as a weak prior.")
     if up is not None:
         csv_bytes = up.getvalue()
+    else:
+        st.sidebar.info("Upload a CSV to run this mode.")
+        st.stop()
 
 # currency defaults
 cur_sym = "$" if market == "US" else "₹"
@@ -233,68 +302,84 @@ default_dca = 500 if market == "US" else 5_000
 dca_step = 100 if market == "US" else 1_000
 
 st.sidebar.markdown("---")
+st.sidebar.subheader("2. Historical sample")
 years, blend = None, False
-if data_mode == "Portfolio (multi-asset)":
+if data_mode == "A portfolio":
     st.sidebar.caption("Portfolio mode uses the full date-aligned history with joint resampling.")
 else:
     window_mode = st.sidebar.radio(
-        "History window", ["Blend eras (recommended)", "Full history", "Last N years"], index=0,
-        help="Blend mixes return blocks across recent + old eras so the result isn't "
-             "locked into one regime. Full history is harshest on volatility; a short "
-             "recent window risks being all-bull.")
-    if window_mode == "Blend eras (recommended)":
+        "Sample window",
+        ["Balanced blend (recommended)", "All available history", "Recent N years"],
+        index=0,
+        help="Balanced blend mixes recent and older return blocks. All history uses everything "
+             "available. Recent N years focuses on the latest regime but may miss older crashes.")
+    if window_mode == "Balanced blend (recommended)":
         blend = True
         st.sidebar.caption(f"Blend weights: {spe.BLEND}")
-    elif window_mode == "Last N years":
-        years = st.sidebar.slider("Years of history", 1, 30, 15,
+    elif window_mode == "Recent N years":
+        years = st.sidebar.slider("Lookback years", 1, 30, 15,
                               help="Cap the lookback to the last N years. Fewer years = more "
                                    "recent regime but fewer real crashes in the sample.")
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("Lump Sum")
+st.sidebar.subheader("3. Investment plan")
 amount = st.sidebar.number_input(
-    f"Invest amount ({cur_sym})", 100, 100_000_000, default_amount, step=amount_step,
+    f"Starting investment ({cur_sym})", 100, 100_000_000, default_amount, step=amount_step,
     help="Hypothetical one-time lump sum invested today. P(profit) is scale-free, but the "
          "percentile ending values scale with this amount.")
 
-st.sidebar.subheader("Monthly Recurring (SIP / DCA)")
 enable_dca = st.sidebar.checkbox(
-    "Enable monthly recurring", value=True,
+    "Add monthly contribution", value=True,
     help="Also simulate a monthly contribution (SIP/DCA) on the SAME market scenarios as the "
          "lump sum, so the comparison isolates cash-flow timing.")
 if enable_dca:
     dca_amount = st.sidebar.number_input(
-        f"Monthly contribution ({cur_sym})", 100, 10_000_000, default_dca, step=dca_step,
+        f"Monthly amount ({cur_sym})", 100, 10_000_000, default_dca, step=dca_step,
         help="Amount contributed at the start of each month over the horizon. Total invested "
              "grows with each contribution; P(profit) compares the ending value to that total.")
 else:
     dca_amount = None
 
 st.sidebar.markdown("---")
-threshold = st.sidebar.slider("Flag P(profit) >=", 0.50, 0.95, 0.70, 0.01,
-                              help="The cutoff for the above/below flag on each horizon. "
-                                   "Higher (e.g. 0.90) = stricter, so fewer horizons get "
-                                   "flagged; lower (e.g. 0.55) = looser, so more do. It only "
-                                   "moves the flag -- the simulation itself does not change. "
-                                   "A display convenience, not a buy/sell signal.")
-haircut = st.sidebar.slider("Drift haircut (stress test)", 0.0, 1.0, 0.0, 0.05,
-                            help="Shave this fraction of the historical drift to stress a "
-                                 "more conservative view. 0 = keep the real historical drift; "
-                                 "1 = remove all drift, so paths fluctuate around flat "
-                                 "(median growth approx. 0, P(profit) approx. 50%). Values "
-                                 "in between partially dampen the trend.")
-paths = st.sidebar.select_slider("Bootstrap paths", [2000, 5000, 10000, 20000], value=10000,
-                                 help="Number of simulated futures generated. More paths give "
-                                      "smoother, more stable percentiles but take longer to run.")
+with st.sidebar.expander("Advanced risk settings", expanded=False):
+    threshold = st.slider("Profit flag cutoff", 0.50, 0.95, 0.70, 0.01,
+                          help="The cutoff for the above/below flag on each horizon. Higher "
+                               "(e.g. 0.90) = stricter, so fewer horizons get flagged; lower "
+                               "(e.g. 0.55) = looser. It only moves the flag -- the simulation "
+                               "itself does not change. A display convenience, not a buy/sell signal.")
+    haircut = st.slider("Stress test: reduce historical drift", 0.0, 1.0, 0.0, 0.05,
+                        help="Shave this fraction of the historical drift to stress a more "
+                             "conservative view. 0 = keep the real historical drift; 1 = remove "
+                             "all drift, so paths fluctuate around flat (median growth approx. 0, "
+                             "P(profit) approx. 50%).")
+    path_options = {
+        "Fast (2,000 paths)": 2000,
+        "Balanced (5,000 paths)": 5000,
+        "Detailed (10,000 paths)": 10000,
+        "Maximum (20,000 paths)": 20000,
+    }
+    path_label = st.selectbox(
+        "Simulation detail", list(path_options), index=2,
+        help="More paths give smoother, more stable percentiles but take longer to run.")
+    paths = path_options[path_label]
 
 
 # ----------------------------------------------------------------------
 # Run
 # ----------------------------------------------------------------------
-st.title("Block-Bootstrap Portfolio Risk Simulator")
-st.caption("Block-bootstrap of real return history -> outcome distribution, tail risk "
-           "(VaR/CVaR), drawdown, and P(profit). Forecasts are calibrated out-of-sample "
-           "(see calibration.py). **Research tool -- not investment advice.**")
+st.title("Portfolio Risk & Construction Lab")
+st.caption("Block-bootstrap risk simulation plus candidate allocation comparisons "
+           "(risk parity, Min-CVaR, and mean-variance). Forecasts are calibrated "
+           "out-of-sample where supported. **Research tool -- not investment advice.**")
+
+if data_mode == "One ticker" and not ticker:
+    st.info("🔍 **Search for a fund or stock** in the sidebar -- or type any symbol "
+            "(e.g. `VTI`, `AAPL`, `SPCX`, `RELIANCE.NS`) and pick **Add** -- to run the simulation.")
+    st.stop()
+
+if data_mode == "A portfolio" and portfolio_parse_error:
+    st.info("Fix the portfolio weights in the sidebar to run the simulation.")
+    st.stop()
 
 try:
     res = run_engine(ticker, csv_bytes, years, blend, amount, paths, haircut, portfolio,
@@ -302,7 +387,7 @@ try:
 except Exception as e:
     st.error(f"Could not run the engine: {e}")
     st.info("If fetching by ticker failed, check the symbol or try again -- the public "
-            "data endpoint occasionally rate-limits. Or switch to **Upload CSV**.")
+            "data endpoint occasionally rate-limits. Or switch to **My CSV**.")
     st.stop()
 
 h, p = res["history"], res["params"]
@@ -347,7 +432,7 @@ if res["mode"] == "blended" or len(res["windows"]) > 1 or res["windows"][0]["yea
 for w in res["warnings"]:
     (st.warning if not w.startswith("BLEND") else st.info)(w)
 
-if data_mode == "Portfolio (multi-asset)" and portfolio:
+if data_mode == "A portfolio" and portfolio:
     st.markdown("---")
     st.subheader("Candidate allocation lab")
     st.caption("Objective-driven candidate allocations, not recommendations. Weights are fit on historical returns, "
