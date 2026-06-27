@@ -3,6 +3,7 @@ on real AAPL data plus edge/failure cases. Prints PASS/FAIL per check."""
 import numpy as np
 import stock_probability_engine as spe
 import calibration as cal
+import portfolio_construction as pc
 
 PASS, FAIL = "PASS", "FAIL"
 results = []
@@ -142,6 +143,127 @@ _a = spe.bootstrap_terminal(log_ret, n5, 3000, block, np.random.default_rng(123)
 _b = spe.bootstrap_portfolio(_simple[:, None], [1.0], n5, 3000, block, np.random.default_rng(123))
 check("portfolio: single-asset reduces to the scalar engine",
       np.allclose(_a, _b, rtol=1e-9, atol=1e-6), f"max abs diff={np.abs(_a - _b).max():.2e}")
+
+# ======================================================================
+# PORTFOLIO CONSTRUCTION invariants (candidate allocations, not advice)
+# ======================================================================
+# 13b) Equal weight is exactly 1/n, long-only, sums to 1
+_ew = pc.equal_weight(["VTI", "QQQ", "BND", "VXUS"])
+check("construction: equal_weight returns 1/n long-only weights",
+      np.allclose(_ew, 0.25) and abs(_ew.sum() - 1.0) < 1e-12 and (_ew >= 0).all(),
+      f"weights={_ew}")
+
+# 13c) Inverse-vol weights are normalized and give more weight to lower-vol assets
+_base = np.linspace(-1.0, 1.0, 250)
+_iv_R = np.column_stack([0.01 * _base, 0.02 * _base, 0.04 * _base])
+_iv = pc.inverse_vol_weights(_iv_R)
+_iv_expected = np.array([4.0 / 7.0, 2.0 / 7.0, 1.0 / 7.0])
+check("construction: inverse_vol_weights scale as 1/vol",
+      np.allclose(_iv, _iv_expected, atol=1e-12)
+      and abs(_iv.sum() - 1.0) < 1e-12 and (_iv >= 0).all(),
+      f"weights={_iv}")
+
+# 13d) Full ERC risk parity equalizes realized variance risk contributions
+_rp_rng = np.random.default_rng(77)
+_target_cov = np.array([[0.0400, 0.0140, 0.0020],
+                        [0.0140, 0.0225, 0.0060],
+                        [0.0020, 0.0060, 0.0100]])
+_rp_R = _rp_rng.multivariate_normal(np.zeros(3), _target_cov, size=5000)
+_rp_w = pc.risk_parity_weights(_rp_R)
+_rp_cov = pc.covariance_matrix(_rp_R)
+_rp_rc = pc.risk_contributions(_rp_w, _rp_cov)
+check("construction: risk_parity_weights equalize risk contributions",
+      abs(_rp_w.sum() - 1.0) < 1e-12 and (_rp_w >= 0).all()
+      and np.max(np.abs(_rp_rc - 1.0 / 3.0)) < 1e-6,
+      f"weights={np.round(_rp_w, 4)} risk_contrib={np.round(_rp_rc, 6)}")
+
+# 13e) Concentration metrics: HHI and effective number of bets
+check("construction: HHI/effective bets are consistent",
+      abs(pc.hhi(_ew) - 0.25) < 1e-12
+      and abs(pc.effective_number_of_bets(_ew) - 4.0) < 1e-12)
+
+# 13f) Min-CVaR reduces empirical in-sample CVaR loss vs equal weight on a fat-tail toy set
+_tail_rng = np.random.default_rng(12)
+_safe = _tail_rng.normal(0.0002, 0.002, 800)
+_risky = _tail_rng.normal(0.0008, 0.012, 800)
+_risky[:40] -= 0.08
+_tail_R = np.column_stack([_risky, _safe])
+_tail_eq = pc.equal_weight(2)
+_tail_mc, _tail_info = pc.min_cvar_weights(_tail_R, solver="subgradient", return_info=True)
+check("construction: min_cvar_weights lowers empirical CVaR loss vs equal weight",
+      abs(_tail_mc.sum() - 1.0) < 1e-12 and (_tail_mc >= -1e-12).all()
+      and pc.empirical_cvar_loss(_tail_R, _tail_mc) < pc.empirical_cvar_loss(_tail_R, _tail_eq),
+      f"solver={_tail_info['solver']} ew={pc.empirical_cvar_loss(_tail_R, _tail_eq):.4f} "
+      f"min={pc.empirical_cvar_loss(_tail_R, _tail_mc):.4f}")
+
+# 13g) Mean-variance baseline returns valid long-only simplex weights
+_mv_w = pc.mean_variance_weights(_rp_R)
+check("construction: mean_variance_weights returns valid long-only weights",
+      abs(_mv_w.sum() - 1.0) < 1e-12 and (_mv_w >= -1e-12).all(),
+      f"weights={np.round(_mv_w, 4)}")
+
+# 13h) Resampled efficient frontier returns a weight-dispersion cloud
+_front_R = _rp_rng.multivariate_normal(
+    np.array([0.0003, 0.0005, 0.0007]),
+    np.array([[0.0300, 0.0100, 0.0040],
+              [0.0100, 0.0250, 0.0060],
+              [0.0040, 0.0060, 0.0200]]),
+    size=250)
+_front = pc.resampled_efficient_frontier(
+    _front_R, risk_aversions=(3.0, 8.0), n_resamples=4, block=21, seed=13)
+check("construction: resampled efficient frontier exposes MV weight dispersion",
+      len(_front) == 8
+      and all(abs(sum(r["weights"]) - 1.0) < 1e-12 for r in _front)
+      and all("ann_return" in r and "ann_vol" in r and "weight_std_mean" in r for r in _front)
+      and max(r["weight_std_mean"] for r in _front) >= 0.0)
+
+# 13i) Candidate evaluation labels in-sample rows explicitly and returns lab metrics
+_eval_rows = pc.evaluate_candidates(
+    _rp_R[:3000], candidates=["equal_weight", "inverse_vol", "risk_parity", "min_cvar", "mean_variance"],
+    years=1, n_paths=300, block=21, stability_resamples=5, seed=5)
+_required = {"candidate", "label", "evaluation", "weights", "P(profit)", "P(beat cash)",
+             "val_P10", "val_P50", "var_ret", "cvar_ret", "maxdd_med", "maxdd_p95worst",
+             "hhi", "effective_bets", "weight_std_mean", "weight_std_max", "n_resamples"}
+check("construction: evaluate_candidates marks in-sample and returns comparison metrics",
+      len(_eval_rows) == 5
+      and all(r["evaluation"] == "in-sample" and r["label"].endswith("(in-sample)") for r in _eval_rows)
+      and all(_required.issubset(r.keys()) for r in _eval_rows)
+      and all(abs(sum(r["weights"]) - 1.0) < 1e-12 for r in _eval_rows)
+      and all(r["effective_bets"] >= 1.0 for r in _eval_rows),
+      f"rows={[r['label'] for r in _eval_rows]}")
+
+# 13j) Supplying eval_returns flips the label without changing fit/eval asset contract
+_oos_rows = pc.evaluate_candidates(
+    _rp_R[:2500], eval_returns=_rp_R[2500:3500], candidates=["equal_weight"],
+    years=1, n_paths=200, block=21, stability_resamples=3, seed=6)
+check("construction: evaluate_candidates supports out-of-sample eval_returns hook",
+      len(_oos_rows) == 1
+      and _oos_rows[0]["evaluation"] == "out-of-sample"
+      and not _oos_rows[0]["label"].endswith("(in-sample)")
+      and _oos_rows[0]["n_resamples"] == 3)
+
+# 13k) Chronological train/eval demo exercises the OOS path directly
+_split_demo = pc.evaluate_train_eval_split(
+    _rp_R[:1200], train_frac=0.65, candidates=["equal_weight", "risk_parity"],
+    years=1, n_paths=150, block=21, stability_resamples=2, seed=7)
+check("construction: train/eval split demo produces out-of-sample rows",
+      _split_demo["train_obs"] > _split_demo["eval_obs"]
+      and len(_split_demo["rows"]) == 2
+      and all(r["evaluation"] == "out-of-sample" for r in _split_demo["rows"]))
+
+# 13l) Candidate evaluation uses the same bootstrap/analyze engine as the core simulator
+_eq_w = pc.equal_weight(3)
+_direct_vp = spe.bootstrap_portfolio(
+    _rp_R[:1000], _eq_w, int(round(1 * 252)), 200, 21, np.random.default_rng(88), amount=12_345.0)
+_direct_metrics = spe.analyze(_direct_vp, 1, amount=12_345.0, cash_rate=0.03, var_conf=0.90)
+_lab_row = pc.evaluate_candidates(
+    _rp_R[:1000], candidates=["equal_weight"], years=1, n_paths=200, block=21,
+    amount=12_345.0, cash_rate=0.03, var_conf=0.90, stability_resamples=0, seed=88)[0]
+_engine_keys = ["P(profit)", "P(beat cash)", "val_P10", "val_P50",
+                "var_ret", "cvar_ret", "maxdd_med", "maxdd_p95worst"]
+check("construction: evaluate_candidates reuses core bootstrap/analyze engine",
+      all(abs(_lab_row[k] - _direct_metrics[k]) < 1e-12 for k in _engine_keys),
+      f"checked={_engine_keys}")
 
 # ======================================================================
 # CALIBRATION scoring invariants (synthetic, deterministic)

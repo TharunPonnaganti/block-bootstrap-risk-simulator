@@ -24,5 +24,14 @@ jobs:
       - name: Install dependencies
         run: pip install numpy matplotlib
 
-      - name: Run QA invariant tests
+      - name: Run engine QA invariant tests
         run: python qa_check.py
+
+      - name: Run construction-lab QA (no SciPy -- exercises subgradient + graceful skip)
+        run: python qa_construction.py
+
+      - name: Install optional optimizer dependency (SciPy exact LP)
+        run: pip install -r requirements-optim.txt
+
+      - name: Run construction-lab QA again (SciPy present -- exercises exact Rockafellar-Uryasev LP)
+        run: python qa_construction.py

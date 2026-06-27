@@ -82,12 +82,16 @@ source venv/bin/activate
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Verify -- should print 23/23 checks passed
-python qa_check.py
+# 4. Verify
+python qa_check.py            # 43/43 engine + calibration + construction checks (real data)
+python qa_construction.py    # 53/53 strict math checks (+5 exact-LP checks if SciPy installed)
 
 # 5. Run
 python stock_probability_engine.py SPY          # CLI
 streamlit run app.py                            # Dashboard (opens in browser)
+
+# Optional: exact Min-CVaR LP solver (otherwise a NumPy subgradient fallback is used)
+pip install -r requirements-optim.txt
 ```
 
 No API keys needed. Data is fetched from Yahoo Finance using Python's built-in `urllib`.
@@ -179,6 +183,8 @@ The dashboard includes:
 - **Market toggle** (US / India) with pre-built ticker lists
 - **Single ticker, portfolio, or CSV upload** modes
 - **Monthly recurring (SIP/DCA)** with side-by-side comparison to lump sum
+- **Candidate allocation lab** in portfolio mode: equal weight, inverse volatility, risk parity, Min-CVaR, and mean-variance candidates
+- **Train/eval split check** plus a resampled mean-variance frontier cloud
 - **Interactive probability cones** -- lump sum (green) and recurring (blue)
 - **Live threshold slider** -- simulation is cached, only the indicator updates
 - **Currency-aware** -- auto-detects `$` or `₹`
@@ -226,9 +232,28 @@ The dashboard includes:
 
 **Stress testing:** `--haircut` removes a fraction of historical drift to see what happens if the future is less rosy than the past.
 
+### Portfolio Construction (`portfolio_construction.py`)
+
+The construction layer proposes candidate allocations, then routes them through the same block-bootstrap engine used by the rest of the project. This keeps the design honest: the optimizer proposes, the bootstrap stress test evaluates.
+
+Candidate methods:
+- **Equal weight** -- simple benchmark
+- **Inverse volatility** -- lower-volatility assets receive larger weights
+- **Risk parity** -- full equal-risk-contribution solve, not inverse-vol in disguise
+- **Min-CVaR** -- minimizes empirical loss CVaR; exact Rockafellar-Uryasev LP is used when optional SciPy is installed, otherwise a pure-NumPy projected subgradient fallback is used
+- **Mean-variance** -- classic long-only baseline, included so its instability can be stress-tested
+
+The dashboard labels in-sample rows explicitly, includes a chronological train/eval split, reports HHI/effective-bets concentration, and shows weight-stability metrics from bootstrap refits. These are candidate allocations, not recommendations.
+
+Optional exact LP solver:
+
+```bash
+pip install -r requirements-optim.txt
+```
+
 ### Walk-Forward Calibration (`calibration.py`)
 
-The bootstrap produces internally consistent probabilities (validated by 23 invariant tests). But that doesn't tell you whether a "72% chance of profit" is actually right. This module checks by **stepping through history**:
+The bootstrap produces internally consistent probabilities (validated by 43 invariant/regression checks). But that doesn't tell you whether a "72% chance of profit" is actually right. This module checks by **stepping through history**:
 
 1. At each point in time, fit the bootstrap using **only data available up to that point**
 2. Forecast P(profit) and outcome percentiles for the next H years
@@ -246,13 +271,27 @@ The bootstrap produces internally consistent probabilities (validated by 23 inva
 - Reports both raw sample count and effective independent N (overlapping windows are correlated)
 - Origins with too little training data are excluded
 
-### QA Suite (`qa_check.py`)
+### QA Suites
 
-23 invariant tests across three areas:
+The project ships **two** test harnesses, run separately.
+
+**`qa_check.py` -- 43 invariant/regression checks on real market data**, across five areas:
 
 - **Engine (12 tests):** determinism, unbiased drift, drawdown sign, scale invariance, VaR/CVaR ordering, CAGR consistency, monotonic P(profit), stress tests, error handling, robustness
-- **Portfolio (4 tests):** weights sum to 1, weight validation rejects invalid specs (zero/negative/mixed), joint resampling preserves correlation, independent resampling destroys it
+- **Portfolio bootstrap (5 tests):** weights sum to 1, weight validation rejects invalid specs (zero/negative/mixed), joint resampling preserves correlation, independent resampling destroys it, single-asset reduction
+- **Portfolio construction (11 tests):** equal weight, inverse volatility, full ERC risk parity, Min-CVaR, mean-variance, resampled frontier, HHI/effective number of bets, candidate evaluation labels, out-of-sample evaluation hook, train/eval split demo, core-engine evaluation equivalence
 - **Calibration (6 tests):** perfect forecast scores 0, coin-flip scores 0.25, base-rate identity, BSS=0 for naive model, informative forecaster beats baseline, bucket counts sum to N
+- **Diagnostics/regressions (9 tests):** diversified-fund classification, prior override, thin-history warning, thin-overlap warning, degenerate-blend warning
+
+**`qa_construction.py` -- 58 strict, deterministic math checks** on the construction lab (53 + 5 SciPy-only exact-LP checks; the LP checks skip cleanly when SciPy is absent). Unlike `qa_check.py`, this suite uses **synthetic returns whose sample covariance equals a target matrix to machine precision** (orthonormal QR basis scaled by a Cholesky factor), so the optimizer identities are checked against *closed-form ground truth*, not approximations:
+
+- **Risk parity / ERC:** equal risk contributions to 1e-8; reduces to inverse-vol exactly for n=2 (any correlation) and for diagonal covariance (the known analytical results)
+- **Min-CVaR:** empirical CVaR >= VaR and tail-mean identity; CVaR monotone in alpha; subgradient solution never worse than equal-weight; with SciPy, the exact Rockafellar-Uryasev LP optimum sits at-or-below the subgradient and within ~0.3% of it
+- **Mean-variance:** portfolio variance monotonically decreases with risk aversion and falls below equal-weight (min-variance direction)
+- **Simplex projection:** sums to 1, non-negative, idempotent, and is the nearest simplex point (verified against random points)
+- **Concentration:** HHI(equal)=1/n, effective-bets(equal)=n, bounds 1/n <= HHI <= 1
+- **Engine equivalence:** `evaluate_candidates` reproduces a direct `bootstrap_portfolio` + `analyze` run byte-for-byte (one validated engine, no parallel path)
+- **Contracts & validation:** in-sample vs out-of-sample labels, train/eval split fits on train only, and malformed inputs raise
 
 ---
 
@@ -302,10 +341,13 @@ The "weaker prior: single stock" warning depends on classifying a ticker as a di
 | File | What it does |
 |---|---|
 | `stock_probability_engine.py` | Core engine: data fetching (Yahoo/CSV), circular block bootstrap (single + blended + portfolio), DCA/SIP simulation, risk metrics (VaR/CVaR/drawdown), CLI output |
+| `portfolio_construction.py` | Candidate allocation helpers: equal weight, inverse volatility, full equal-risk-contribution risk parity, Min-CVaR, mean-variance baseline, resampled frontier cloud, HHI/effective-bets concentration metrics, bootstrap candidate evaluation through the core engine with in-sample labeling and weight-stability metrics |
 | `calibration.py` | Walk-forward backtest: expanding-window calibration, Brier Score, Brier Skill Score, reliability curve, PIT coverage |
-| `qa_check.py` | 23 statistical tests: engine determinism, scale invariance, tail-risk ordering, portfolio correlation, weight validation, calibration math |
-| `app.py` | Streamlit dashboard: lump sum vs. recurring comparison, probability cones, risk cards, market toggle |
+| `qa_check.py` | 43 statistical/regression checks on real data: engine determinism, portfolio bootstrap, construction invariants, calibration math, warning regressions |
+| `qa_construction.py` | 58 strict deterministic math checks on the construction lab against closed-form ground truth (exact-covariance synthetic data); SciPy-only exact-LP checks skip gracefully when absent |
+| `app.py` | Streamlit dashboard: lump sum vs. recurring comparison, probability cones, risk cards, market toggle, candidate-allocation lab |
 | `requirements.txt` | Python dependencies (numpy, matplotlib, streamlit, pandas, altair) |
+| `requirements-optim.txt` | Optional SciPy dependency for exact Min-CVaR linear programming |
 | `reliability_curve.png` | Sample calibration output (SPY, 1-year horizon) |
 
 ---
@@ -313,7 +355,8 @@ The "weaker prior: single stock" warning depends on classifying a ticker as a di
 ## Tech Stack
 
 - **Python 3.10+** -- tested on 3.13
-- **NumPy** -- all bootstrap and statistical computations
+- **NumPy** -- bootstrap, portfolio construction, and statistical computations
+- **SciPy** -- optional exact Min-CVaR LP solver via `requirements-optim.txt`
 - **matplotlib** -- calibration reliability curve
 - **Streamlit + Altair** -- interactive local dashboard
 - **Standard library only** for data fetching (`urllib`, `json`, `csv`)
