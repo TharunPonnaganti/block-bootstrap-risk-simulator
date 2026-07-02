@@ -345,6 +345,68 @@ check("fix: degenerate-blend warning fires on short history",
 check("fix: degenerate-blend warning silent on long history",
       spe.degenerate_blend_warning(25.0) is None)
 
+# ======================================================================
+# PLAIN-ENGLISH SUMMARY invariants (summary.py) -- synthetic, deterministic.
+# The summary is a template filled from the results dict: every number in
+# the text must be traceable to the dict, warnings must appear verbatim,
+# and optional sections must appear exactly when their data is present.
+# ======================================================================
+import summary as summ
+
+def _fake_res(dca=False, currency=None, warnings=()):
+    hz = lambda yrs, pp, p50: {
+        "years": yrs, "P(profit)": pp, "P(beat cash)": pp - 0.05,
+        "val_P10": 10_929.0, "val_P50": p50, "val_P90": 29_459.0,
+        "var_ret": -0.19, "cvar_ret": -0.26, "maxdd_med": -0.13, "maxdd_p95worst": -0.30,
+    }
+    res = {
+        "source": "Yahoo daily adj-close | TESTTKR", "mode": "blended",
+        "currency": currency or {"symbol": "$", "code": "USD"},
+        "history": {"years": 25.0, "obs": 6293, "drift": 0.097, "vol": 0.191,
+                    "max_drawdown": -0.55, "worst_day": -0.114},
+        "params": {"amount": 10_000.0, "paths": 10_000, "block": 21,
+                   "cash_rate": 0.04, "haircut": 0.0},
+        "horizons": [hz(1, 0.785, 11_343.0), hz(5, 0.943, 17_932.0)],
+        "warnings": list(warnings),
+    }
+    if dca:
+        res["dca"] = {"contrib": 500.0, "horizons": [{
+            "years": 5, "P(profit)": 0.871, "n_contributions": 61,
+            "total_invested": 30_500.0, "val_P50": 38_120.0, "total_return_P50": 0.25,
+        }]}
+    return res
+
+# 24) numeric fidelity: values in the text match the dict, formatted identically
+_txt = summ.summarize(_fake_res())
+check("summary: P(profit) and median value appear exactly as computed",
+      "94%" in _txt and "$17,932" in _txt and "$10,929" in _txt,
+      "expected 94% / $17,932 / $10,929 in text")
+check("summary: tail risk (VaR/CVaR) and drawdown appear as computed",
+      "-19%" in _txt and "-26%" in _txt and "30%" in _txt)
+
+# 25) warnings appear VERBATIM when present, section absent when none
+_warn = "THIN HISTORY (~2.0 yrs total vs 5y max horizon): synthetic test warning."
+_txt_w = summ.summarize(_fake_res(warnings=[_warn]))
+check("summary: warnings quoted verbatim when present",
+      _warn in _txt_w and "Heads up" in _txt_w)
+check("summary: no warning section when the run raised none",
+      "Heads up" not in _txt)
+
+# 26) DCA section appears iff dca data present, with its exact numbers
+_txt_d = summ.summarize(_fake_res(dca=True))
+check("summary: DCA section appears with exact totals when enabled",
+      "$30,500" in _txt_d and "61 contributions" in _txt_d and "$38,120" in _txt_d)
+check("summary: DCA section avoids uncomputed range claims",
+      "narrower range" not in _txt_d and "trades some upside" not in _txt_d)
+check("summary: no DCA section when disabled", "/month" not in _txt)
+
+# 27) currency-aware and deterministic
+_txt_inr = summ.summarize(_fake_res(currency={"symbol": "Rs.", "code": "INR"}))
+check("summary: uses the run's own currency symbol",
+      "Rs.17,932" in _txt_inr and "$" not in _txt_inr.replace("P(profit)", ""))
+check("summary: deterministic for identical input",
+      summ.summarize(_fake_res(dca=True)) == summ.summarize(_fake_res(dca=True)))
+
 spe.AMOUNT = 10_000.0   # restore
 
 # ---- report ----------------------------------------------------------

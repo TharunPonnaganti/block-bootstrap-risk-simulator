@@ -14,6 +14,7 @@ import streamlit as st
 
 import stock_probability_engine as spe
 import portfolio_construction as pc
+import summary as plain_summary
 
 st.set_page_config(page_title="Portfolio Risk & Construction Lab", page_icon="📈", layout="wide")
 
@@ -431,6 +432,11 @@ if res["mode"] == "blended" or len(res["windows"]) > 1 or res["windows"][0]["yea
 
 for w in res["warnings"]:
     (st.warning if not w.startswith("BLEND") else st.info)(w)
+
+with st.expander("📝 In plain English — what this run shows", expanded=True):
+    st.markdown(plain_summary.summarize(res))
+    st.caption("Every number above comes straight from this simulation run — nothing is "
+               "generated or estimated outside it.")
 
 if data_mode == "A portfolio" and portfolio:
     st.markdown("---")

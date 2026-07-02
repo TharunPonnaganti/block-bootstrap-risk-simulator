@@ -83,7 +83,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # 4. Verify
-python qa_check.py            # 43/43 engine + calibration + construction checks (real data)
+python qa_check.py            # 52/52 engine + calibration + construction + summary checks
 python qa_construction.py    # 53/53 strict math checks (+5 exact-LP checks if SciPy installed)
 
 # 5. Run
@@ -253,7 +253,7 @@ pip install -r requirements-optim.txt
 
 ### Walk-Forward Calibration (`calibration.py`)
 
-The bootstrap produces internally consistent probabilities (validated by 43 invariant/regression checks). But that doesn't tell you whether a "72% chance of profit" is actually right. This module checks by **stepping through history**:
+The bootstrap produces internally consistent probabilities (validated by 52 invariant/regression checks). But that doesn't tell you whether a "72% chance of profit" is actually right. This module checks by **stepping through history**:
 
 1. At each point in time, fit the bootstrap using **only data available up to that point**
 2. Forecast P(profit) and outcome percentiles for the next H years
@@ -275,13 +275,14 @@ The bootstrap produces internally consistent probabilities (validated by 43 inva
 
 The project ships **two** test harnesses, run separately.
 
-**`qa_check.py` -- 43 invariant/regression checks on real market data**, across five areas:
+**`qa_check.py` -- 52 invariant/regression checks on real market data**, across six areas:
 
 - **Engine (12 tests):** determinism, unbiased drift, drawdown sign, scale invariance, VaR/CVaR ordering, CAGR consistency, monotonic P(profit), stress tests, error handling, robustness
 - **Portfolio bootstrap (5 tests):** weights sum to 1, weight validation rejects invalid specs (zero/negative/mixed), joint resampling preserves correlation, independent resampling destroys it, single-asset reduction
 - **Portfolio construction (11 tests):** equal weight, inverse volatility, full ERC risk parity, Min-CVaR, mean-variance, resampled frontier, HHI/effective number of bets, candidate evaluation labels, out-of-sample evaluation hook, train/eval split demo, core-engine evaluation equivalence
 - **Calibration (6 tests):** perfect forecast scores 0, coin-flip scores 0.25, base-rate identity, BSS=0 for naive model, informative forecaster beats baseline, bucket counts sum to N
 - **Diagnostics/regressions (9 tests):** diversified-fund classification, prior override, thin-history warning, thin-overlap warning, degenerate-blend warning
+- **Plain-English summary (9 tests):** every number in the generated text matches the engine's results dict exactly, warnings are quoted verbatim, DCA section appears only when enabled, unsupported range claims are blocked, currency-aware, deterministic
 
 **`qa_construction.py` -- 58 strict, deterministic math checks** on the construction lab (53 + 5 SciPy-only exact-LP checks; the LP checks skip cleanly when SciPy is absent). Unlike `qa_check.py`, this suite uses **synthetic returns whose sample covariance equals a target matrix to machine precision** (orthonormal QR basis scaled by a Cholesky factor), so the optimizer identities are checked against *closed-form ground truth*, not approximations:
 
@@ -343,9 +344,10 @@ The "weaker prior: single stock" warning depends on classifying a ticker as a di
 | `stock_probability_engine.py` | Core engine: data fetching (Yahoo/CSV), circular block bootstrap (single + blended + portfolio), DCA/SIP simulation, risk metrics (VaR/CVaR/drawdown), CLI output |
 | `portfolio_construction.py` | Candidate allocation helpers: equal weight, inverse volatility, full equal-risk-contribution risk parity, Min-CVaR, mean-variance baseline, resampled frontier cloud, HHI/effective-bets concentration metrics, bootstrap candidate evaluation through the core engine with in-sample labeling and weight-stability metrics |
 | `calibration.py` | Walk-forward backtest: expanding-window calibration, Brier Score, Brier Skill Score, reliability curve, PIT coverage |
-| `qa_check.py` | 43 statistical/regression checks on real data: engine determinism, portfolio bootstrap, construction invariants, calibration math, warning regressions |
+| `qa_check.py` | 52 statistical/regression checks on real data: engine determinism, portfolio bootstrap, construction invariants, calibration math, warning regressions, plain-English summary fidelity |
 | `qa_construction.py` | 58 strict deterministic math checks on the construction lab against closed-form ground truth (exact-covariance synthetic data); SciPy-only exact-LP checks skip gracefully when absent |
-| `app.py` | Streamlit dashboard: lump sum vs. recurring comparison, probability cones, risk cards, market toggle, candidate-allocation lab |
+| `summary.py` | Plain-English summary of each run: deterministic template filled only with the engine's own computed numbers (no generation, no external calls) |
+| `app.py` | Streamlit dashboard: plain-English run summary, lump sum vs. recurring comparison, probability cones, risk cards, market toggle, candidate-allocation lab |
 | `requirements.txt` | Python dependencies (numpy, matplotlib, streamlit, pandas, altair) |
 | `requirements-optim.txt` | Optional SciPy dependency for exact Min-CVaR linear programming |
 | `reliability_curve.png` | Sample calibration output (SPY, 1-year horizon) |
