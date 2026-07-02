@@ -433,7 +433,7 @@ if res["mode"] == "blended" or len(res["windows"]) > 1 or res["windows"][0]["yea
 for w in res["warnings"]:
     (st.warning if not w.startswith("BLEND") else st.info)(w)
 
-with st.expander("📝 In plain English — what this run shows", expanded=True):
+with st.expander("💡 Risk & Outcomes Summary", expanded=True):
     # escape $ so Streamlit's markdown doesn't treat $...$ pairs as LaTeX math
     st.markdown(plain_summary.summarize(res).replace("$", "\\$"))
     st.caption("Every number above comes straight from this simulation run — nothing is "
