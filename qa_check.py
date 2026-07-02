@@ -378,9 +378,9 @@ def _fake_res(dca=False, currency=None, warnings=()):
 
 # 24) numeric fidelity: values in the text match the dict, formatted identically
 _txt = summ.summarize(_fake_res())
-check("summary: P(profit) and median value appear exactly as computed",
-      "94%" in _txt and "$17,932" in _txt and "$10,929" in _txt,
-      "expected 94% / $17,932 / $10,929 in text")
+check("summary: P(profit) as natural frequency and money values exactly as computed",
+      "94 out of 100" in _txt and "$17,932" in _txt and "$10,929" in _txt,
+      "expected '94 out of 100' / $17,932 / $10,929 in text")
 check("summary: tail risk (VaR/CVaR) and drawdown appear as computed",
       "-19%" in _txt and "-26%" in _txt and "30%" in _txt)
 

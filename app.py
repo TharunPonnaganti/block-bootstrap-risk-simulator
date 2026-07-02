@@ -434,7 +434,8 @@ for w in res["warnings"]:
     (st.warning if not w.startswith("BLEND") else st.info)(w)
 
 with st.expander("📝 In plain English — what this run shows", expanded=True):
-    st.markdown(plain_summary.summarize(res))
+    # escape $ so Streamlit's markdown doesn't treat $...$ pairs as LaTeX math
+    st.markdown(plain_summary.summarize(res).replace("$", "\\$"))
     st.caption("Every number above comes straight from this simulation run — nothing is "
                "generated or estimated outside it.")
 
