@@ -55,9 +55,9 @@ def summarize(res):
     # ---- the ride along the way -----------------------------------------
     parts.append(
         f"**The ride along the way:** even futures that end well rarely travel smoothly. The "
-        f"typical one dips {_pct(-focus['maxdd_med'])} below its high point at some stage before "
-        f"recovering; the rough ones dip {_pct(-focus['maxdd_p95worst'])}. Whether you could sit "
-        f"through a dip like that without selling is the real question.")
+        f"typical one falls {_pct(-focus['maxdd_med'])} from a previous high at some point; "
+        f"the rough ones fall {_pct(-focus['maxdd_p95worst'])}. Could you stay invested through "
+        f"a decline like that?")
 
     # ---- how the horizon changes the odds --------------------------------
     if len(horizons) >= 2:
